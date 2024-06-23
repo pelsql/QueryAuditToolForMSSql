@@ -160,7 +160,7 @@ SET
   filename = ''#FullFn#''
 , max_file_size = (10) -- fichier 40 meg file par défaut MB est le default
 -- pas de rollover puisque la procédure gère elle-même quand ôter les évènements quand elle les a traité
---, max_rollover_files = (10) 
+, max_rollover_files = (1000) 
 )
 WITH 
   (
@@ -181,7 +181,8 @@ GO
 Drop table if exists dbo.EvenementsTraites
 Create table dbo.EvenementsTraites
 (
-  NbTotalFich Int
+  passe Int
+, NbTotalFich Int
 , file_seq Int
 , file_name nvarchar(260) NULL
 ,	last_Offset_done bigint NULL
@@ -190,25 +191,30 @@ GO
 Drop table if exists dbo.EvenementsTraitesSuivi
 Create table dbo.EvenementsTraitesSuivi
 (
-  Essai Int identity
+  Passe Int 
 , NbTotalFich Int
 , file_seq Int
 , file_name nvarchar(260) NULL
-,	last_Offset_done bigint NULL
+, last_Offset_done bigint NULL
+, dateSuivi Datetime2 Default SYSDATETIME()
 )
+create index iDateSuivi on dbo.EvenementsTraitesSuivi(dateSuivi)
+create index iPasseFileName on dbo.EvenementsTraitesSuivi (passe, file_name) 
 GO
 -- just a transaction table processed by an instead of trigger
 -- the trigger processed data in Inserted but never make it to the table
 Drop table if exists dbo.PipelineDeTraitementFinalDAudit
 CREATE TABLE dbo.PipelineDeTraitementFinalDAudit
 (
-	 server_principal_name varchar(50) NULL
+  server_principal_name varchar(50) NULL
 ,	session_id int NULL
 ,	event_time datetimeoffset(7) NULL
 , Database_name sysname NULL
 ,	sql_text nvarchar(max) NULL
 ,	file_name nvarchar(260) NOT NULL -- selon donc sys.fn_xe_file_target_read_file
 ,	file_Offset bigint NOT NULL -- selon donc sys.fn_xe_file_target_read_file
+, passe int NULL
+, file_seq int null
 ) 
 go
 -- final process data, put there by the trigger, that match 
@@ -218,13 +224,15 @@ go
 Drop table if Exists dbo.AuditComplet
 CREATE TABLE dbo.AuditComplet
 (
-	 server_principal_name varchar(50) NULL
+  server_principal_name varchar(50) NULL
 , event_time datetimeoffset(7) NULL
 , Client_net_address nvarchar(48) NULL
 ,	session_id int NULL
 , Program_name sysname
 , database_name sysname
 , sql_text nvarchar(max) NULL
+, passe Int
+, file_seq Int
 ) 
 create index iEvent_Time on dbo.AuditComplet(Event_time)
 go
@@ -234,6 +242,10 @@ CREATE TABLE dbo.LogTraitementAudit
   MsgDate datetime2 default SYSDATETIME()
 , Msg nvarchar(max) NULL
 ) 
+create index iMsgDate on dbo.LogTraitementAudit(MsgDate)
+go
+drop sequence if exists dbo.SeqExtraction
+Create Sequence dbo.SeqExtraction as Int start with 0;
 go
 --
 -- Selon edition aller chercher meilleur option de compression
@@ -272,7 +284,8 @@ ON dbo.PipelineDeTraitementFinalDAudit
 Instead of Insert, Update, Delete -- just handle insert, discard Delete, Update
 AS -- just a mean to implement a pipeline, handle inserts and discard Delete, Update
 Begin
-  Set nocount on
+  If @@ROWCOUNT = 0 Return
+
   -- remember this table is always empty. It is just a pipeline
   -- In care there us non-sense attempts of deletes or update (since table is empty)
   -- there is nothing to do, since in both case inserted table is going to be empty.
@@ -282,10 +295,11 @@ Begin
   Begin Try
 
   Insert into dbo.AuditComplet 
-    (server_principal_name, event_time, Client_net_address, session_id, Program_name, database_name, sql_text)
+    (server_principal_name, event_time, Client_net_address, session_id, Program_name, database_name, sql_text, passe, file_seq)
   Select 
     I.server_principal_name, I.event_time, Hc.Client_net_address
   , I.session_id, Hc.Program_name, I.database_name, I.sql_text
+  , I.passe, I.file_seq
   From 
     Inserted as I
     -- Un même login peut se connecter et se reconnecter avec un peu de chance de réobtenir le meme spid
@@ -315,22 +329,30 @@ Begin
     -- Par contre quand on supprime les fichiers, on a besoin de la liste des fichiers passés
     -- et le nombre total, pour éviter de supprimer le dernier.
 
+    Declare @passe Int = Next Value For dbo.SeqExtraction
     Delete dbo.EvenementsTraites -- on réévalue par ce que la fonction a retourné
-    Insert into dbo.EvenementsTraites (file_Seq, file_name, last_Offset_done, NbTotalFich)
+    Insert into dbo.EvenementsTraites (passe, file_Seq, file_name, last_Offset_done, NbTotalFich)
     Select 
-      fileSeq=ROW_NUMBER() Over (Order by file_Name)
+      @passe
+    , fileSeq=ROW_NUMBER() Over (Order by file_Name)
     , file_name
     , last_offset_done
     , NbTotalFich=COUNT(*) Over (Partition By NULL)
     From
       (
-      Select Distinct file_name, last_offset_done=MAX(file_offset)
+      Select file_name, last_offset_done=MAX(file_offset)
       From Inserted
       Group by file_name 
       ) as files
 
-    Insert into dbo.EvenementsTraitesSuivi (file_Seq, file_name, last_Offset_done, NbTotalFich) 
-    Select file_Seq, file_name, last_Offset_done, NbTotalFich from dbo.EvenementsTraites
+    Insert into dbo.EvenementsTraitesSuivi (passe, file_Seq, file_name, last_Offset_done, NbTotalFich) 
+    Select @passe, file_Seq, file_name, last_Offset_done, NbTotalFich from dbo.EvenementsTraites
+
+    Delete From dbo.EvenementsTraitesSuivi 
+    Where dateSuivi < DATEADD(dd, -45, getdate()) -- détruit traces plus vieilles que 45 jours.
+
+    Delete From dbo.LogTraitementAudit
+    Where MsgDate < DATEADD(dd, -45, getdate()) -- détruit log plus vieux que 45 jours.
 
   End Try
   Begin Catch
@@ -366,14 +388,10 @@ Begin
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
   Begin
 
-    -- On veut un résultat cohérent, et seulement cette proc. travaille sur ces tables
-    -- donc aucun risque de deadlock par l'utilisation de TX.
-    Begin Tran 
-
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
     -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
     Insert into Dbo.PipelineDeTraitementFinalDAudit
-      (server_principal_name, session_id, event_time, Database_Name, sql_text, file_name, file_Offset)
+      (server_principal_name, session_id, event_time, Database_Name, sql_text, file_name, file_Offset, passe, file_seq)
     Select
       ev.server_principal_name
     , ev.session_id
@@ -382,14 +400,17 @@ Begin
     , ev.sql_text 
     , Ev.file_name
     , ev.file_Offset
+    , StartP.passe
+    , StartP.file_seq
     From 
       ( -- la fonction sys.fn_xe_file_target_read_file a besoin du dernier fichier lu et l'offset lu
-        -- Elle se rend à se fichier sans parcourir les autres puis se positionne après l'offset lu
+        -- Elle se rend à ce fichier sans parcourir les autres puis se positionne après l'offset lu
         -- pour y poursuivre la suite de la lecture des évènements.
-      Select file_name, last_Offset_done From dbo.EvenementsTraites Where file_seq = NbTotalFich
+
+      Select file_name, last_Offset_done, passe, file_seq From dbo.EvenementsTraites Where file_seq = NbTotalFich
       UNION ALL
-      -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ
-      Select NULL, NULL Where Not Exists (Select * From dbo.EvenementsTraites)
+      -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ, après ça ne devrait plus arriver
+      Select NULL, NULL, NULL, NULL Where Not Exists (Select * From dbo.EvenementsTraites)
       ) as StartP
       CROSS JOIN Dbo.EnumsEtOpt as E
       CROSS APPLY
@@ -460,6 +481,10 @@ Begin
         Declare @trc Nvarchar(4000) = 'declare @trcPourProfiler varchar(4000) =''Fichier à ôter :'+ @afileToDel+@progres+''''
         Exec(@trc)
         Exec master.sys.xp_delete_files @afileToDel
+        Insert into dbo.LogTraitementAudit (Msg) 
+        Select 'Suppression/traitement fichier audit terminé: '+@afileToDel + @progres +
+        + 'At Offset '+CONVERT(nvarchar(40), @last_Offset_done)+' pour '+CONVERT(nvarchar, @eventsDone)+ ' évènements '
+
         -- élimine des évènements traités seulement celui qu'on vient de faire 
         -- ne pas oublier qu'il en restera deux qui seront à traiter 
         Delete From dbo.EvenementsTraites Where file_seq=@File_Seq
@@ -471,14 +496,7 @@ Begin
         If @MsgDel Not Like '%xp_delete_files() returned error 32%' 
           THROW;
       End Catch
-
-      -- log fichier audit terminé
-      Insert into dbo.LogTraitementAudit (Msg)
-      Select 'Traitement fichier audit terminé: '+@afileToDel + @progres +
-      + 'At Offset '+CONVERT(nvarchar(40), @last_Offset_done)+' pour '+CONVERT(nvarchar, @eventsDone)+ ' évènements '
     End
-
-    Commit Tran -- everything is consistent and done here
 
     -- ralentir plus ou moins la fréquence du traitement dépendant du nombre d'évènements qu'on 
     -- a trouvées comme restant à traiter.
@@ -516,25 +534,44 @@ Begin
     From 
       (Select ErrMsgTemplate From dbo.EnumsEtOpt) as E
       CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
-    commit -- pour garder le log
     RAISERROR(@msg,11,1)
     Insert into dbo.LogTraitementAudit (Msg) values (@msg)
   End Catch
 End
 go
+--Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
+--From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
+--group by file_name, last_Offset_done
+--order by file_name, last_Offset_done
 
 /*
 -- trace pour tests
 Select * From AuditReq.dbo.connectionsRecentes 
 Select * From auditReq.dbo.EvenementsTraites with (nolock)
-Select * From auditReq.dbo.LogTraitementAudit with (nolock) order by msgDate
+Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
+order by dateSuivi
+Select file_name, last From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
+group by dateSuivi
+Select * From auditReq.dbo.LogTraitementAudit 
+where msg like '%D:\_Tmp\AuditReq\AuditReq_0_133635856879820000.Xel%'
+with (nolock) order by msgDate
+Select * From auditReq.dbo.LogTraitementAudit 
+where MsgDate <= '2024-06-22 21:03:20.8561224'
 Select stuff(msg, 87, 3, '') From auditReq.dbo.LogTraitementAudit with (nolock) order by stuff(msg, 87, 3, '')
 Select * From auditreq.dbo.EvenementsTraitesSuivi 
-select * from auditreq.dbo.AuditComplet where sql_text like '--%[0-9]%CREATE OR ALTER%'
 
+Select event_time, SeqInQuery, row_number() Over (order by SeqInQuery), sql_text
+From 
+  auditReq.dbo.AuditComplet with (nolock)
+  cross apply (select seqInQuery=substring(sql_text,3,6)) as SeqInQuery
+where sql_text  like '--[0-9][0-9][0-9][0-9][0-9][0-9]%'
+order by seqInQuery
 
-Select count(*) From auditReq.dbo.AuditComplet with (nolock)
-where sql_text not like '%Create Or Alter Function S#.ColInfo%'
+Select *, convert (varbinary(max),sql_text)  From auditReq.dbo.AuditComplet with (nolock) 
+--where rtrim(sql_text) = '' 
+where event_time = '2024-06-23 15:16:15.2220000 -04:00'
+order by event_time 
+where sql_text  like '%Create%Or%Alter%Function%S#.ColInfo%'
 Select
   ev.server_principal_name
 , ev.session_id
