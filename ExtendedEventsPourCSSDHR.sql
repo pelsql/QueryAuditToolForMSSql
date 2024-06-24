@@ -158,9 +158,9 @@ CREATE EVENT SESSION AuditReq ON SERVER
 ADD TARGET package0.asynchronous_file_target(
 SET 
   filename = ''#FullFn#''
-, max_file_size = (10) -- fichier 40 meg file par défaut MB est le default
+, max_file_size = (40) -- fichier 40 meg file par défaut MB est le default
 -- pas de rollover puisque la procédure gère elle-même quand ôter les évènements quand elle les a traité
-, max_rollover_files = (1000) 
+, max_rollover_files = (1000) -- environ 40 gb
 )
 WITH 
   (
@@ -289,7 +289,6 @@ Begin
   -- remember this table is always empty. It is just a pipeline
   -- In care there us non-sense attempts of deletes or update (since table is empty)
   -- there is nothing to do, since in both case inserted table is going to be empty.
-
   Declare @msg nvarchar(4000)
 
   Begin Try
@@ -346,7 +345,7 @@ Begin
       ) as files
 
     Insert into dbo.EvenementsTraitesSuivi (passe, file_Seq, file_name, last_Offset_done, NbTotalFich) 
-    Select @passe, file_Seq, file_name, last_Offset_done, NbTotalFich from dbo.EvenementsTraites
+    Select @passe, file_Seq, file_name, last_Offset_done, NbTotalFich from dbo.EvenementsTraites as Et
 
     Delete From dbo.EvenementsTraitesSuivi 
     Where dateSuivi < DATEADD(dd, -45, getdate()) -- détruit traces plus vieilles que 45 jours.
@@ -432,17 +431,16 @@ Begin
     -- l'aurait détruit.
     Insert into dbo.LogTraitementAudit (Msg)
     Select Msg=PrefixMsgFichPerdu+Diff.file_name
-       From
-         (Select PrefixMsgFichPerdu, RepFichTrc, MatchFichTrc From Dbo.EnumsEtOpt) as MsgPrefix
-         CROSS APPLY
-         (
-         Select file_Name from dbo.EvenementsTraites
-         Except
-         Select RepFichTrc+file_or_directory_name FROM sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
-         ) as Diff
+    From
+      (Select PrefixMsgFichPerdu, RepFichTrc, MatchFichTrc From Dbo.EnumsEtOpt) as MsgPrefix
+      CROSS APPLY
+      (
+      Select file_Name from dbo.EvenementsTraites
+      Except
+      Select full_filesystem_path  FROM sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
+      ) as Diff
     If @@ROWCOUNT>0 
     Begin
-      Rollback;
       Declare @msgPerte nvarchar(4000)
       Select @msgPerte=E.MsgFichPerduGenerique From dbo.EnumsEtOpt as E
       Raiserror (@msgPerte, 11, 1)
@@ -472,7 +470,32 @@ Begin
         Dbo.EvenementsTraites CROSS APPLY (Select SeqFichSuiv=@file_Seq+1) as SeqFichSuiv
       Where SeqFichSuiv < NbTotalFich And file_seq = SeqFichSuiv
       Order by file_seq
-      If @@ROWCOUNT = 0 Break
+
+      If @@ROWCOUNT = 0 -- plus de noms de fichiers à supprimer déduit des dbo.evenementstraités.
+      Begin
+        -- Menage des fichiers dont les noms ne sont plus retournés par sys.fn_xe_file_target_read_file
+        -- donc pas dans dbo.evenementstraites non plus pour la même raison.
+        -- C'est possible à cause d'un rollover qui se ferait et qui éliminerait un fichier qu'on a vraiment fini de lire
+        -- mais comme on ne sait pas si c'est le cas, l'algorithnme de l'élimine pas. 
+        -- Il attend qu'il tombe en second à la prochaine lecture. Mais comme le RollOver supprime le fichier
+        -- avant qu'on aille relire, sys.fn_xe_file_target_read_file n'en retourne plus la trace. Ici on fait 
+        -- ménage "lazy" qui n'en fait qu'un à la fois, et ne touche jamais au dernier présent sur disque
+        -- qu'on présume comme appartenant à la trace active.
+        Select TOP 1 @aFileToDel = full_filesystem_path
+        FROM dbo.EnumsEtOpt cross apply sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
+        Where 
+          DateDiff(mi, last_write_time, GETUTCDATE()) > 1 -- fichiers plus écrits depuis plus d'une minute
+          And Not Exists -- et pas présents dans la liste des ficiers retournés par la fonction, alors qu'elle n'en voit plus qu'un
+          (
+          Select *
+          From dbo.EvenementsTraites 
+          Where file_name = full_filesystem_path 
+          )
+        Order by full_filesystem_path
+        If @@ROWCOUNT = 0 -- pas de fichier à traiter ici non plus, on passe, sinon on laisse détruire
+          Break
+        Set @last_Offset_done=NULL -- inconnu
+      End
 
       -- on ne laisse pas faire de rollover au niveau des evènements, mais on détruit les fichiers qu'on a traité
       -- toutefois même si on a fini de traiter les évènements du fichier, d'autres peuvent s'y ajouter entretemps
@@ -482,17 +505,29 @@ Begin
         Exec(@trc)
         Exec master.sys.xp_delete_files @afileToDel
         Insert into dbo.LogTraitementAudit (Msg) 
-        Select 'Suppression/traitement fichier audit terminé: '+@afileToDel + @progres +
-        + 'At Offset '+CONVERT(nvarchar(40), @last_Offset_done)+' pour '+CONVERT(nvarchar, @eventsDone)+ ' évènements '
+        Select 'Suppression/traitement fichier audit terminé: '+afileTodel+Msg
+        From 
+          (Select afileTodel= @afileToDel) as aFileToDel
+          CROSS APPLY
+          (
+          Select Msg = ' '+ @progres + 'At Offset '+CONVERT(nvarchar(40), @last_Offset_done)
+                    + ' pour '+CONVERT(nvarchar, @eventsDone)+ ' évènements '
+          Where @last_Offset_done is not null
+          UNION ALL
+          Select Msg = '. Fichier sans info car non retourné par sys.fn_xe_file_target_read_file, car Rollover l''a supprimé entre 2 lectures '
+          Where @last_Offset_done IS NULL
+          ) as Msg
 
         -- élimine des évènements traités seulement celui qu'on vient de faire 
         -- ne pas oublier qu'il en restera deux qui seront à traiter 
-        Delete From dbo.EvenementsTraites Where file_seq=@File_Seq
+        Delete From dbo.EvenementsTraites Where file_seq=@File_Seq And @last_Offset_done IS NOT NULL
       End Try
       Begin Catch 
         -- Si ce n'est pa une erreur de fichier en usage, renvoie la.
         -- mais ce n'est pas supposé être jamais le cas d'un fichier en usage
         Declare @msgDel nvarchar(4000) = ERROR_MESSAGE() 
+        Insert into dbo.LogTraitementAudit (Msg) 
+        Select 'Suppression fichier audit avec erreur: '+@afileToDel + @msgDel
         If @MsgDel Not Like '%xp_delete_files() returned error 32%' 
           THROW;
       End Catch
@@ -500,9 +535,7 @@ Begin
 
     -- ralentir plus ou moins la fréquence du traitement dépendant du nombre d'évènements qu'on 
     -- a trouvées comme restant à traiter.
-    If @eventsDone Between 0 and 1000
-      Waitfor Delay '00:00:15' 
-    If @eventsDone Between 1001 and 5000
+    If Not Exists (Select * From Dbo.EvenementsTraites Where NbTotalFich > 1)
       Waitfor Delay '00:00:05' 
     
     -- On ne veut pas que la table des connexions récentes à l'historique grossise toujours.
@@ -560,6 +593,19 @@ where MsgDate <= '2024-06-22 21:03:20.8561224'
 Select stuff(msg, 87, 3, '') From auditReq.dbo.LogTraitementAudit with (nolock) order by stuff(msg, 87, 3, '')
 Select * From auditreq.dbo.EvenementsTraitesSuivi 
 
+
+Select *, 
+From 
+  auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
+  left join 
+  (values ('AuditReq_0_133636748038350000'), ('AuditReq_0_133636749713830000'), ('AuditReq_0_133636750202440000'), ('AuditReq_0_133636750291350000')
+  ) as L(l)
+  on file_name like '%'+l.l+'%'
+  left join AuditReq.dbo.LogTraitementAudit as A
+  on A.Msg Like '%'+file_name+'%'
+order by dateSuivi
+
+
 Select event_time, SeqInQuery, row_number() Over (order by SeqInQuery), sql_text
 From 
   auditReq.dbo.AuditComplet with (nolock)
@@ -567,6 +613,7 @@ From
 where sql_text  like '--[0-9][0-9][0-9][0-9][0-9][0-9]%'
 order by seqInQuery
 
+Select * From auditReq.dbo.AuditComplet with (nolock) 
 Select *, convert (varbinary(max),sql_text)  From auditReq.dbo.AuditComplet with (nolock) 
 --where rtrim(sql_text) = '' 
 where event_time = '2024-06-23 15:16:15.2220000 -04:00'
@@ -615,7 +662,8 @@ From
   Order by Session_id, LoginName, LoginTime desc
   ) Hc
 
-
+cd d:\_tmp\AuditReq
+sqlcmd -E -S.\sql2k19 -dS# -i GrosseCharge.Sql
 Exec AuditReq.dbo.CompleterInfoAudit
 if @@TRANCOUNT>0 Rollback -- quand on test la SP et qu'on force son arrêt
 */
