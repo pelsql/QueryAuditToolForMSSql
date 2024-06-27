@@ -144,7 +144,7 @@ Select @FullFn=E.TargetFnCreateEvent From Dbo.EnumsEtOpt as e;
 Declare @Sql Nvarchar(max) =
 '
 CREATE EVENT SESSION AuditReq ON SERVER
-  ADD EVENT sqlserver.sql_batch_completed
+  ADD EVENT sqlserver.sp_statement_completed
   (
     ACTION
     (    
@@ -228,7 +228,7 @@ CREATE TABLE dbo.AuditComplet
 , event_time datetimeoffset(7) NULL
 , Client_net_address nvarchar(48) NULL
 ,	session_id int NULL
-, Program_name sysname 
+, Program_name sysname NULL
 , database_name sysname 
 , statement nvarchar(max) 
 , passe Int 
@@ -294,10 +294,10 @@ Begin
   Begin Try
 
   Insert into dbo.AuditComplet 
-    (server_principal_name, event_time, Client_net_address, session_id, Program_name, database_name, sql_text, passe, file_seq)
+    (server_principal_name, event_time, Client_net_address, session_id, Program_name, database_name, statement, passe, file_seq)
   Select 
     I.server_principal_name, I.event_time, Hc.Client_net_address
-  , I.session_id, Hc.Program_name, I.database_name, I.sql_text
+  , I.session_id, Hc.Program_name, I.database_name, I.statement
   , I.passe, I.file_seq
   From 
     Inserted as I
@@ -623,8 +623,8 @@ Select top 3
   ev.server_principal_name
 , ev.session_id
 , ev.event_time
-, Hc.program_name
-, Hc.Client_net_address
+--, Hc.program_name
+--, Hc.Client_net_address
 , ev.database_name
 , ev.statement 
 , ev.sql_text
