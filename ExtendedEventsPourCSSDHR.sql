@@ -141,10 +141,14 @@ End
 go
 declare @FullFn sysname; -- création event Session
 Select @FullFn=E.TargetFnCreateEvent From Dbo.EnumsEtOpt as e;
+-- sp_statement_completed (statement = chaque requete, sql_text le call)
+-- sql_stmt_completed (statement = chaque requete, sql_text le lot)
+-- pour sql_stmt_completed on peut donc alléger le traitement en omettant sql_text
+-- sql_batch_completed (statement = NULL, sql_text le lot)
 Declare @Sql Nvarchar(max) =
 '
 CREATE EVENT SESSION AuditReq ON SERVER
-  ADD EVENT sqlserver.sql_batch_completed
+  ADD EVENT sqlserver.sql_statement_completed
   (
     ACTION
     (    
@@ -210,6 +214,8 @@ CREATE TABLE dbo.PipelineDeTraitementFinalDAudit
 ,	session_id int NULL
 ,	event_time datetimeoffset(7) NULL
 , Database_name sysname NULL
+--, sql_batch nvarchar(max)
+--, line_number int
 ,	statement nvarchar(max) NULL
 ,	file_name nvarchar(260) NOT NULL -- selon donc sys.fn_xe_file_target_read_file
 ,	file_Offset bigint NOT NULL -- selon donc sys.fn_xe_file_target_read_file
@@ -230,6 +236,8 @@ CREATE TABLE dbo.AuditComplet
 ,	session_id int NULL
 , Program_name sysname 
 , database_name sysname 
+--, sql_batch nvarchar(max)
+--, line_number int
 , statement nvarchar(max) 
 , passe Int 
 , file_seq Int
@@ -294,11 +302,17 @@ Begin
   Begin Try
 
   Insert into dbo.AuditComplet 
-    (server_principal_name, event_time, Client_net_address, session_id, Program_name, database_name, sql_text, passe, file_seq)
+    ( server_principal_name, event_time, Client_net_address
+    , session_id, Program_name, database_name
+    --, sql_batch
+    --, line_number
+    , statement, passe, file_seq)
   Select 
     I.server_principal_name, I.event_time, Hc.Client_net_address
-  , I.session_id, Hc.Program_name, I.database_name, I.sql_text
-  , I.passe, I.file_seq
+  , I.session_id, Hc.Program_name, I.database_name
+  --, I.sql_batch
+  --, I.Line_number
+  , I.statement, I.passe, I.file_seq
   From 
     Inserted as I
     -- Un même login peut se connecter et se reconnecter avec un peu de chance de réobtenir le meme spid
@@ -390,12 +404,17 @@ Begin
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
     -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
     Insert into Dbo.PipelineDeTraitementFinalDAudit
-      (server_principal_name, session_id, event_time, Database_Name, statement, file_name, file_Offset, passe, file_seq)
+      ( server_principal_name, session_id, event_time, Database_Name
+      --, sql_batch
+      --, line_number
+      , statement, file_name, file_Offset, passe, file_seq)
     Select
       ev.server_principal_name
     , ev.session_id
     , ev.event_time
     , ev.database_name
+    --, sql_batch.sql_batch
+    --, ev.line_number
     , ev.statement 
     , Ev.file_name
     , ev.file_Offset
@@ -421,10 +440,17 @@ Begin
       , server_principal_name = xEvents.event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
       , session_id = xEvents.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
       , database_name = xEvents.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
+      --, line_number = xEvents.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
       , statement = xEvents.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
+      , event_data = xEvents.event_data
       FROM sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
       CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
       ) as ev
+      --OUTER APPLY 
+      --(
+      --Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
+      --Where line_number = 1
+      --) as Sql_Batch
     Set @eventsDone = @@ROWCOUNT 
 
     -- vérifier si j'ai un fichier à traiter que je ne retrouve plus sur disque pcq un évènement
@@ -535,7 +561,7 @@ Begin
 
     -- ralentir plus ou moins la fréquence du traitement dépendant du nombre d'évènements qu'on 
     -- a trouvées comme restant à traiter.
-    If Not Exists (Select * From Dbo.EvenementsTraites Where NbTotalFich > 1)
+    If @eventsDone=0 Or Not Exists (Select * From Dbo.EvenementsTraites Where NbTotalFich > 1)
       Waitfor Delay '00:00:05' 
     
     -- On ne veut pas que la table des connexions récentes à l'historique grossise toujours.
@@ -578,6 +604,11 @@ go
 --order by file_name, last_Offset_done
 
 /*
+Select session_id--, sql_batch
+, statement 
+From auditReq.dbo.AuditComplet with (nolock) 
+order by event_time
+
 -- trace pour tests
 Select * From AuditReq.dbo.connectionsRecentes 
 Select * From auditReq.dbo.EvenementsTraites with (nolock)
@@ -613,7 +644,7 @@ From
 where statement  like '--[0-9][0-9][0-9][0-9][0-9][0-9]%'
 order by seqInQuery
 
-Select * From auditReq.dbo.AuditComplet with (nolock) 
+
 Select *, convert (varbinary(max),statement)  From auditReq.dbo.AuditComplet with (nolock) 
 --where rtrim(statement) = '' 
 where event_time = '2024-06-23 15:16:15.2220000 -04:00'
@@ -627,7 +658,7 @@ Select top 3
 , Hc.Client_net_address
 , ev.database_name
 , ev.statement 
-, ev.sql_text
+, ev.sql_batch
 , startP.file_Name
 , StartP.last_Offset_done
 , Ev.file_name
@@ -651,7 +682,7 @@ From
   , session_id = xEvents.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
   , database_name = xEvents.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
   , statement = xEvents.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
-  , sql_text = xEvents.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
+  , sql_batch = xEvents.event_data.value('(event/action[@name="sql_batch"]/value)[1]', 'nvarchar(max)') 
   , xEvents.event_data
   FROM sys.fn_xe_file_target_read_file('D:\_tmp\AuditReq\AuditReq*.xel', NULL, StartP.file_name, StartP.last_Offset_done) as F --'D:\_tmp\QueryTrackingSession_0_133625926429210000.xel',	9111552) --null, null)
   CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
