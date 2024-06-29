@@ -14,29 +14,6 @@ End
 go
 USE AuditReq
 go
-Create Or Alter View Dbo.EnumsEtOpt
-as
-Select *, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
-From 
-  (
-  Select 
-    MatchFichTrc='AuditReq*.xel'
-  , BaseFn='AuditReq.Xel'
-  , RootAboveDir='D:\_Tmp\'
-  , Dir='AuditReq'
-  , PrefixMsgFichPerdu='Fichier audit perdu: '
-  , ErrMsgTemplate=
-'----------------------------------------------------------------------------------------------
- -- Msg: #ErrMessage#
- -- Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
- ----------------------------------------------------------------------------------------------'
-  ) as Base
-  CROSS APPLY (Select RepFich=RootAboveDir+Dir) as RootAboveDir
-  CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
-  CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
-  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+BaseFn) as TargetFnCreateEvent
--- select * from Dbo.EnumsEtOpt
-GO
 Create Or Alter Function dbo.FormatRunTimeMsg 
 (
   @MsgTemplate Nvarchar(max)
@@ -69,6 +46,54 @@ From
   Cross Apply (Select ErrMsg=Replace(FmtErrMsg3, '#atPos#', atPos) ) as FmtErrMsg
 )
 GO
+CREATE OR ALTER FUNCTION dbo.FormatCurrentMsg (@MsgTemplate nvarchar(4000))
+Returns table
+as 
+Return
+  Select * 
+  From 
+  dbo.FormatRunTimeMsg 
+  (  @MsgTemplate
+  , ERROR_NUMBER ()
+  , ERROR_SEVERITY()
+  , ERROR_STATE()
+  , ERROR_LINE()
+  , ERROR_PROCEDURE ()
+  , ERROR_MESSAGE ()
+  ) as Fmt
+/*
+Begin try 
+  Select 1/0
+End Try 
+Begin Catch
+  Select errMsg From Dbo.EnumsEtOpt as E Cross apply dbo.FormatCurrentMsg(E.ErrMsgTemplate)
+End catch
+*/
+GO
+Create Or Alter View Dbo.EnumsEtOpt
+as
+Select *, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
+From 
+  (
+  Select 
+    MatchFichTrc='AuditReq*.xel'
+  , BaseFn='AuditReq.Xel'
+  , RootAboveDir='D:\_Tmp\'
+  , Dir='AuditReq'
+  , PrefixMsgFichPerdu='Fichier audit perdu: '
+  , ErrMsgTemplate=
+'----------------------------------------------------------------------------------------------
+ -- Msg: #ErrMessage#
+ -- Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
+ ----------------------------------------------------------------------------------------------'
+  , ErrMsgTemplateShort=' Msg: #ErrMessage# Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#'
+  ) as Base
+  CROSS APPLY (Select RepFich=RootAboveDir+Dir) as RootAboveDir
+  CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
+  CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
+  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+BaseFn) as TargetFnCreateEvent
+-- select * from Dbo.EnumsEtOpt
+GO
 If Not Exists
    (
    Select * 
@@ -84,7 +109,7 @@ End
 GO
 if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
 GO
-drop trigger if exists LogonAuditTrigger on all server
+drop trigger if exists LogonAuditReqTrigger on all server
 go
 Drop table if exists dbo.connectionsRecentes
 CREATE TABLE dbo.connectionsRecentes
@@ -110,22 +135,53 @@ from
   sys.dm_exec_connections as C
   ON C.session_id = S.session_id
 GO
-CREATE or Alter TRIGGER LogonAuditTrigger
-ON ALL SERVER
+-- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
+Use master;
+DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
+IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
+go
+Use AuditReq;
+IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
+go
+Use Master;
+declare @unknownPwd nvarchar(100) = convert(nvarchar(400), HASHBYTES('SHA1', convert(nvarchar(100),newid())), 2)
+Exec
+(
+'
+create login AuditReqUser 
+With Password = '''+@unknownPwd+'''
+   , DEFAULT_DATABASE = Tempdb, DEFAULT_LANGUAGE=US_ENGLISH
+   , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
+)
+GRANT VIEW SERVER STATE TO [AuditReqUser];
+go
+CREATE or Alter TRIGGER LogonAuditReqTrigger
+ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
 AS
 BEGIN
+  Begin Try
   Insert into AuditReq.[dbo].[connectionsRecentes]
        ( LoginName    , Session_id, LoginTime,     client_net_address   , program_name)
-  select S.Login_Name , Evi.Spid,   S.Login_Time,  C.client_net_address , S.program_name 
+  select Distinct -- distinct à cause de très rares cas, peu explicables.
+    ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
   From 
     (Select EventData=EVENTDATA()) as EvD
     CROSS APPLY (Select Spid=EventData.value('(/EVENT_INSTANCE/SPID)[1]', 'INT')) as Evi
+    CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
     JOIN (select * from master.sys.dm_exec_sessions) as S
     ON S.session_id = Evi.Spid And S.is_user_process=1
-    JOIN master.sys.dm_exec_connections as C
-    ON C.session_id = S.session_id
+  End Try
+  Begin Catch
+    THROW;
+  End Catch
 END;
+GO
+Use AuditReq;
+CREATE USER AuditReqUser For Login AuditReqUser;
+GRANT INSERT ON [dbo].[connectionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
+GRANT SELECT ON Dbo.EnumsEtOpt TO AuditReqUser;
+GRANT SELECT ON Dbo.FormatCurrentMsg TO AuditReqUser;
 GO
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
