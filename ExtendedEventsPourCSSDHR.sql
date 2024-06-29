@@ -290,7 +290,7 @@ CREATE TABLE dbo.AuditComplet
 , event_time datetimeoffset(7) NULL
 , Client_net_address nvarchar(48) NULL
 ,	session_id int NULL
-, Program_name sysname 
+, Program_name sysname NULL
 , database_name sysname 
 --, sql_batch nvarchar(max)
 --, line_number int
@@ -654,6 +654,114 @@ Begin
   End Catch
 End
 go
+USE [msdb]
+GO
+
+/****** Object:  Job [AuditReq]    Script Date: 2024-06-29 09:23:36 ******/
+Begin Try 
+
+  BEGIN TRANSACTION;
+
+  DECLARE @ReturnCode INT = 0
+
+  DECLARE @jobId BINARY(16)
+  Select @jobId = job_id From msdb.dbo.sysjobs where name =N'AuditReq'
+
+  If @jobId IS NOT NULL
+  Begin
+    If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
+    Begin
+      EXEC sp_detach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
+      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqSchedule'
+      IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+    End
+    EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=N'AuditReq'
+    IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+  End
+
+  Set @jobId = NULL
+  EXEC @ReturnCode =  msdb.dbo.sp_add_job 
+    @job_name=N'AuditReq', 
+		  @enabled=1, 
+		  @notify_level_eventlog=0, 
+		  @notify_level_email=0, 
+		  @notify_level_netsend=0, 
+		  @notify_level_page=0, 
+		  @delete_level=0, 
+		  @description=N'No description available.', 
+		  @category_name=N'Data Collector', 
+		  @owner_login_name=N'sa',
+    @job_id = @jobId OUTPUT
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Run', 
+		  @step_id=1, 
+		  @cmdexec_success_code=0, 
+		  @on_success_action=1, 
+		  @on_success_step_id=0, 
+		  @on_fail_action=2, 
+		  @on_fail_step_id=0, 
+		  @retry_attempts=0, 
+		  @retry_interval=0, 
+		  @os_run_priority=0, @subsystem=N'TSQL', 
+		  @command=
+    N'
+Begin try
+  EXECUTE [dbo].[CompleterInfoAudit]
+End Try
+Begin catch
+  Declare @msg nvarchar(max)
+  Select @msg = F.ErrMsg
+  From 
+    AuditReq.dbo.EnumsEtOpt as E
+    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+  Print @msg
+End catch	
+', 
+		  @database_name=N'AuditReq', 
+		  @flags=4
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job_Step ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_update_Job ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
+    @schedule_name=N'AuditReqSchedule',
+		  @enabled=1, 
+		  @freq_type=64, 
+		  @freq_interval=0, 
+		  @freq_subday_type=0, 
+		  @freq_subday_interval=0, 
+		  @freq_relative_interval=0, 
+		  @freq_recurrence_factor=0, 
+		  @active_start_date=20240614, 
+		  @active_end_date=99991231, 
+		  @active_start_time=0, 
+		  @active_end_time=235959, 
+		  @schedule_uid=N'125473bc-5be4-482d-a983-6429de1eb934'
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule ',11,1,@returnCode)
+
+  EXEC sp_attach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_jobserver ',11,1,@returnCode)
+
+  EXEC dbo.sp_start_job N'AuditReq';
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_start_job ',11,1,@returnCode)
+
+  COMMIT
+End Try
+Begin catch
+  Declare @msg nvarchar(max)
+  Select @msg = F.ErrMsg
+  From 
+    AuditReq.dbo.EnumsEtOpt as E
+    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+  Print @msg
+  ROLLBACK
+End catch
+GO
+
 --Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 --group by file_name, last_Offset_done
