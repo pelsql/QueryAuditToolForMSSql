@@ -111,8 +111,9 @@ if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
 GO
 drop trigger if exists LogonAuditReqTrigger on all server
 go
-Drop table if exists dbo.connectionsRecentes
-CREATE TABLE dbo.connectionsRecentes
+Drop table if exists dbo.connectionsRecentes -- changement de nom p/r versions antérieures
+Drop table if exists dbo.connexionsRecentes
+CREATE TABLE dbo.connexionsRecentes
 (
 	 LoginName nvarchar(256) NULL
 , Session_id smallint NULL
@@ -121,8 +122,8 @@ CREATE TABLE dbo.connectionsRecentes
 , program_name sysname NULL
 ) 
 go
-create unique clustered index iconnectionsRecentes 
-on dbo.connectionsRecentes (Session_id, LoginName, LoginTime Desc)
+create unique clustered index iconnexionsRecentes 
+on dbo.connexionsRecentes (Session_id, LoginName, LoginTime Desc)
 GO
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
@@ -146,18 +147,17 @@ GRANT VIEW SERVER STATE TO [AuditReqUser];
 GO
 Use AuditReq;
 CREATE USER AuditReqUser For Login AuditReqUser;
-GRANT INSERT ON [dbo].[connectionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
-GRANT SELECT ON Dbo.EnumsEtOpt TO AuditReqUser;
-GRANT SELECT ON Dbo.FormatCurrentMsg TO AuditReqUser;
+GRANT INSERT, SELECT ON [dbo].[connexionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
+USE master
 GO
-CREATE or Alter TRIGGER LogonAuditReqTrigger
+CREATE or Alter TRIGGER LogonAuditReqTrigger 
 ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
 AS
 BEGIN
   Begin Try
 
-  Insert into AuditReq.dbo.connectionsRecentes
+  Insert into AuditReq.dbo.connexionsRecentes
    (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
   select
     ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
@@ -178,7 +178,7 @@ BEGIN
     JOIN 
     sys.dm_exec_connections as C
     ON C.session_id = S.session_id
-  Where Not Exists (Select * From AuditReq.dbo.connectionsRecentes)
+  Where Not Exists (Select * From AuditReq.dbo.connexionsRecentes)
   End Try
   Begin Catch
     THROW;
@@ -188,6 +188,7 @@ GO
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
 GO
+USE AuditReq
 -- Supprimer la session si elle existe et nettoyer ses fichiers de trace
 Declare @Fn nvarchar(260)
 Select @Fn=E.PathReadFileTargetPrm From dbo.EnumsEtOpt as E
@@ -383,7 +384,7 @@ Begin
     OUTER APPLY 
     (
     Select TOP 1 Hc.Program_name, Hc.Client_net_address 
-    From Auditreq.dbo.connectionsRecentes as Hc
+    From Auditreq.dbo.connexionsRecentes as Hc
     Where Hc.LoginName = I.server_principal_name 
       And Hc.session_id = I.session_id
       And Hc.LoginTime < I.event_time
@@ -442,18 +443,6 @@ Begin
   Set nocount on
 
   Begin Try
-
-  -- complète les connexions manquantes, pour ne pas avoir des program_name NULL et des client_net_address NULL
-  Insert into dbo.connectionsRecentes
-  select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-  from 
-    (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-    JOIN 
-    sys.dm_exec_connections as C
-    ON C.session_id = S.session_id
-  Except 
-  select R.LoginName, R.Session_id, R.LoginTime, R.Client_net_address, R.program_name
-  From Dbo.connectionsRecentes R
 
   Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
@@ -631,7 +620,7 @@ Begin
     From 
       (
       Select LoginName, session_id, LoginTime, connectSeq=ROW_NUMBER() Over (partition by LoginName order by LoginTime Desc)
-      From dbo.connectionsRecentes as RC
+      From dbo.connexionsRecentes as RC
       ) as Rc
     Where connectSeq > 1 -- connexion passée, parce que connects=1 
       And Not Exists -- si une session d'un utilisateur semble être du passé, on patiente 1 heure pour être sûr qu'elle a été traitée
@@ -776,7 +765,7 @@ From auditReq.dbo.AuditComplet with (nolock)
 order by event_time
 
 -- trace pour tests
-Select * From AuditReq.dbo.connectionsRecentes 
+Select * From AuditReq.dbo.connexionsRecentes 
 Select * From auditReq.dbo.EvenementsTraites with (nolock)
 Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 order by dateSuivi
@@ -856,7 +845,7 @@ From
   OUTER APPLY 
   (
   Select TOP 1 Hc.Program_name, Hc.Client_net_address 
-  From Auditreq.dbo.connectionsRecentes as Hc
+  From Auditreq.dbo.connexionsRecentes as Hc
   Where Hc.LoginName = ev.server_principal_name 
     And Hc.session_id = ev.session_id
     And Hc.LoginTime < ev.event_time
