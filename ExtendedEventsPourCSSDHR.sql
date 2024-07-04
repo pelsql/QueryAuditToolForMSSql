@@ -124,17 +124,6 @@ go
 create unique clustered index iconnectionsRecentes 
 on dbo.connectionsRecentes (Session_id, LoginName, LoginTime Desc)
 GO
--- simplifie les tests car quand on démarre, le logon trigger n'enregistre que les nouvelles
--- connexions mais il faut faire comme s'il avait enregistré les connexions déjà ouvertes
-Set nocount on
-Insert into dbo.connectionsRecentes
-select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-from 
-  (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-  JOIN 
-  sys.dm_exec_connections as C
-  ON C.session_id = S.session_id
-GO
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
@@ -150,7 +139,7 @@ Exec
 '
 create login AuditReqUser 
 With Password = '''+@unknownPwd+'''
-   , DEFAULT_DATABASE = Tempdb, DEFAULT_LANGUAGE=US_ENGLISH
+   , DEFAULT_DATABASE = AuditReq, DEFAULT_LANGUAGE=US_ENGLISH
    , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
 )
 GRANT VIEW SERVER STATE TO [AuditReqUser];
@@ -161,9 +150,9 @@ FOR LOGON
 AS
 BEGIN
   Begin Try
-  Insert into AuditReq.[dbo].[connectionsRecentes]
-       ( LoginName    , Session_id, LoginTime,     client_net_address   , program_name)
-  select Distinct -- distinct à cause de très rares cas, peu explicables.
+
+  Insert into AuditReq.dbo.connectionsRecentes
+  select
     ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
   From 
     (Select EventData=EVENTDATA()) as EvD
@@ -171,6 +160,18 @@ BEGIN
     CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
     JOIN (select * from master.sys.dm_exec_sessions) as S
     ON S.session_id = Evi.Spid And S.is_user_process=1
+  UNION  -- provoque effet du distinct à cause de très rares cas, peu explicables dans la première et seconde requête
+
+  -- quand on démarre, le logon trigger n'enregistre que les nouvelles
+  -- mais il faut faire comme s'il avait enregistré les connexions déjà ouvertes
+  -- lorsque la table est vide
+  select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
+  from 
+    (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
+    JOIN 
+    sys.dm_exec_connections as C
+    ON C.session_id = S.session_id
+  Where Not Exists (Select * From AuditReq.dbo.connectionsRecentes)
   End Try
   Begin Catch
     THROW;

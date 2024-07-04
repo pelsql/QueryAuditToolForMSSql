@@ -1,3 +1,0 @@
-dbo.CompleterInfoAudit
-go
-commit
