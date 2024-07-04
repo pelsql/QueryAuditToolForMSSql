@@ -152,6 +152,7 @@ BEGIN
   Begin Try
 
   Insert into AuditReq.dbo.connectionsRecentes
+   (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
   select
     ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
   From 
