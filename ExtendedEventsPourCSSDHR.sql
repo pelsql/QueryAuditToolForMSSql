@@ -143,7 +143,13 @@ With Password = '''+@unknownPwd+'''
    , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
 )
 GRANT VIEW SERVER STATE TO [AuditReqUser];
-go
+GO
+Use AuditReq;
+CREATE USER AuditReqUser For Login AuditReqUser;
+GRANT INSERT ON [dbo].[connectionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
+GRANT SELECT ON Dbo.EnumsEtOpt TO AuditReqUser;
+GRANT SELECT ON Dbo.FormatCurrentMsg TO AuditReqUser;
+GO
 CREATE or Alter TRIGGER LogonAuditReqTrigger
 ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
@@ -178,12 +184,6 @@ BEGIN
     THROW;
   End Catch
 END;
-GO
-Use AuditReq;
-CREATE USER AuditReqUser For Login AuditReqUser;
-GRANT INSERT ON [dbo].[connectionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
-GRANT SELECT ON Dbo.EnumsEtOpt TO AuditReqUser;
-GRANT SELECT ON Dbo.FormatCurrentMsg TO AuditReqUser;
 GO
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
