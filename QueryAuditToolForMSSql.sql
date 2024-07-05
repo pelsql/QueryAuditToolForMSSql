@@ -1,4 +1,15 @@
-﻿-- -----------------------------------------------------------------------------------
+﻿/*
+-------------------------------------------------------------------------------------------------------
+AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
+Auteur   : Maurice Pelchat
+Licence  : BSD-4
+-------------------------------------------------------------------------------------------------------
+AuditReq : Tool to produce managed audit of SQL queries by the mean of a SQL Server database
+Auteur   : Maurice Pelchat
+Licence  : BSD-4
+-------------------------------------------------------------------------------------------------------
+*/
+-- -----------------------------------------------------------------------------------
 -- Avant de démarrer ce script ajuster les options de nom de fichier et de répertoire
 -- dans la vue Dbo.EnumsEtOpt
 -- -----------------------------------------------------------------------------------
@@ -111,8 +122,9 @@ if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
 GO
 drop trigger if exists LogonAuditReqTrigger on all server
 go
-Drop table if exists dbo.connectionsRecentes
-CREATE TABLE dbo.connectionsRecentes
+Drop table if exists dbo.connectionsRecentes -- changement de nom p/r versions antérieures
+Drop table if exists dbo.connexionsRecentes
+CREATE TABLE dbo.connexionsRecentes
 (
 	 LoginName nvarchar(256) NULL
 , Session_id smallint NULL
@@ -121,19 +133,8 @@ CREATE TABLE dbo.connectionsRecentes
 , program_name sysname NULL
 ) 
 go
-create unique clustered index iconnectionsRecentes 
-on dbo.connectionsRecentes (Session_id, LoginName, LoginTime Desc)
-GO
--- simplifie les tests car quand on démarre, le logon trigger n'enregistre que les nouvelles
--- connexions mais il faut faire comme s'il avait enregistré les connexions déjà ouvertes
-Set nocount on
-Insert into dbo.connectionsRecentes
-select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-from 
-  (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-  JOIN 
-  sys.dm_exec_connections as C
-  ON C.session_id = S.session_id
+create unique clustered index iconnexionsRecentes 
+on dbo.connexionsRecentes (Session_id, LoginName, LoginTime Desc)
 GO
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
@@ -150,20 +151,26 @@ Exec
 '
 create login AuditReqUser 
 With Password = '''+@unknownPwd+'''
-   , DEFAULT_DATABASE = Tempdb, DEFAULT_LANGUAGE=US_ENGLISH
+   , DEFAULT_DATABASE = AuditReq, DEFAULT_LANGUAGE=US_ENGLISH
    , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
 )
 GRANT VIEW SERVER STATE TO [AuditReqUser];
-go
-CREATE or Alter TRIGGER LogonAuditReqTrigger
+GO
+Use AuditReq;
+CREATE USER AuditReqUser For Login AuditReqUser;
+GRANT INSERT, SELECT ON [dbo].[connexionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
+USE master
+GO
+CREATE or Alter TRIGGER LogonAuditReqTrigger 
 ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
 AS
 BEGIN
   Begin Try
-  Insert into AuditReq.[dbo].[connectionsRecentes]
-       ( LoginName    , Session_id, LoginTime,     client_net_address   , program_name)
-  select Distinct -- distinct à cause de très rares cas, peu explicables.
+
+  Insert into AuditReq.dbo.connexionsRecentes
+   (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
+  select
     ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
   From 
     (Select EventData=EVENTDATA()) as EvD
@@ -171,21 +178,28 @@ BEGIN
     CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
     JOIN (select * from master.sys.dm_exec_sessions) as S
     ON S.session_id = Evi.Spid And S.is_user_process=1
+  UNION  -- provoque effet du distinct à cause de très rares cas, peu explicables dans la première et seconde requête
+
+  -- quand on démarre, le logon trigger n'enregistre que les nouvelles
+  -- mais il faut faire comme s'il avait enregistré les connexions déjà ouvertes
+  -- lorsque la table est vide
+  select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
+  from 
+    (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
+    JOIN 
+    sys.dm_exec_connections as C
+    ON C.session_id = S.session_id
+  Where Not Exists (Select * From AuditReq.dbo.connexionsRecentes)
   End Try
   Begin Catch
     THROW;
   End Catch
 END;
 GO
-Use AuditReq;
-CREATE USER AuditReqUser For Login AuditReqUser;
-GRANT INSERT ON [dbo].[connectionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
-GRANT SELECT ON Dbo.EnumsEtOpt TO AuditReqUser;
-GRANT SELECT ON Dbo.FormatCurrentMsg TO AuditReqUser;
-GO
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
 GO
+USE AuditReq
 -- Supprimer la session si elle existe et nettoyer ses fichiers de trace
 Declare @Fn nvarchar(260)
 Select @Fn=E.PathReadFileTargetPrm From dbo.EnumsEtOpt as E
@@ -204,7 +218,7 @@ Select @FullFn=E.TargetFnCreateEvent From Dbo.EnumsEtOpt as e;
 Declare @Sql Nvarchar(max) =
 '
 CREATE EVENT SESSION AuditReq ON SERVER
-  ADD EVENT sqlserver.sp_statement_completed
+  ADD EVENT sqlserver.sql_statement_completed
   (
     ACTION
     (    
@@ -381,7 +395,7 @@ Begin
     OUTER APPLY 
     (
     Select TOP 1 Hc.Program_name, Hc.Client_net_address 
-    From Auditreq.dbo.connectionsRecentes as Hc
+    From Auditreq.dbo.connexionsRecentes as Hc
     Where Hc.LoginName = I.server_principal_name 
       And Hc.session_id = I.session_id
       And Hc.LoginTime < I.event_time
@@ -440,18 +454,6 @@ Begin
   Set nocount on
 
   Begin Try
-
-  -- complète les connexions manquantes, pour ne pas avoir des program_name NULL et des client_net_address NULL
-  Insert into dbo.connectionsRecentes
-  select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-  from 
-    (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-    JOIN 
-    sys.dm_exec_connections as C
-    ON C.session_id = S.session_id
-  Except 
-  select R.LoginName, R.Session_id, R.LoginTime, R.Client_net_address, R.program_name
-  From Dbo.connectionsRecentes R
 
   Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
@@ -629,7 +631,7 @@ Begin
     From 
       (
       Select LoginName, session_id, LoginTime, connectSeq=ROW_NUMBER() Over (partition by LoginName order by LoginTime Desc)
-      From dbo.connectionsRecentes as RC
+      From dbo.connexionsRecentes as RC
       ) as Rc
     Where connectSeq > 1 -- connexion passée, parce que connects=1 
       And Not Exists -- si une session d'un utilisateur semble être du passé, on patiente 1 heure pour être sûr qu'elle a été traitée
@@ -654,6 +656,114 @@ Begin
   End Catch
 End
 go
+USE [msdb]
+GO
+
+/****** Object:  Job [AuditReq]    Script Date: 2024-06-29 09:23:36 ******/
+Begin Try 
+
+  BEGIN TRANSACTION;
+
+  DECLARE @ReturnCode INT = 0
+
+  DECLARE @jobId BINARY(16)
+  Select @jobId = job_id From msdb.dbo.sysjobs where name =N'AuditReq'
+
+  If @jobId IS NOT NULL
+  Begin
+    If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
+    Begin
+      EXEC sp_detach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
+      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqSchedule'
+      IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+    End
+    EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=N'AuditReq'
+    IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+  End
+
+  Set @jobId = NULL
+  EXEC @ReturnCode =  msdb.dbo.sp_add_job 
+    @job_name=N'AuditReq', 
+		  @enabled=1, 
+		  @notify_level_eventlog=0, 
+		  @notify_level_email=0, 
+		  @notify_level_netsend=0, 
+		  @notify_level_page=0, 
+		  @delete_level=0, 
+		  @description=N'No description available.', 
+		  @category_name=N'Data Collector', 
+		  @owner_login_name=N'sa',
+    @job_id = @jobId OUTPUT
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Run', 
+		  @step_id=1, 
+		  @cmdexec_success_code=0, 
+		  @on_success_action=1, 
+		  @on_success_step_id=0, 
+		  @on_fail_action=2, 
+		  @on_fail_step_id=0, 
+		  @retry_attempts=0, 
+		  @retry_interval=0, 
+		  @os_run_priority=0, @subsystem=N'TSQL', 
+		  @command=
+    N'
+Begin try
+  EXECUTE [dbo].[CompleterInfoAudit]
+End Try
+Begin catch
+  Declare @msg nvarchar(max)
+  Select @msg = F.ErrMsg
+  From 
+    AuditReq.dbo.EnumsEtOpt as E
+    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+  Print @msg
+End catch	
+', 
+		  @database_name=N'AuditReq', 
+		  @flags=4
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job_Step ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_update_Job ',11,1,@returnCode)
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
+    @schedule_name=N'AuditReqSchedule',
+		  @enabled=1, 
+		  @freq_type=64, 
+		  @freq_interval=0, 
+		  @freq_subday_type=0, 
+		  @freq_subday_interval=0, 
+		  @freq_relative_interval=0, 
+		  @freq_recurrence_factor=0, 
+		  @active_start_date=20240614, 
+		  @active_end_date=99991231, 
+		  @active_start_time=0, 
+		  @active_end_time=235959, 
+		  @schedule_uid=N'125473bc-5be4-482d-a983-6429de1eb934'
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule ',11,1,@returnCode)
+
+  EXEC sp_attach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_jobserver ',11,1,@returnCode)
+
+  EXEC dbo.sp_start_job N'AuditReq';
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_start_job ',11,1,@returnCode)
+
+  COMMIT
+End Try
+Begin catch
+  Declare @msg nvarchar(max)
+  Select @msg = F.ErrMsg
+  From 
+    AuditReq.dbo.EnumsEtOpt as E
+    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+  Print @msg
+  ROLLBACK
+End catch
+GO
+
 --Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 --group by file_name, last_Offset_done
@@ -666,7 +776,7 @@ From auditReq.dbo.AuditComplet with (nolock)
 order by event_time
 
 -- trace pour tests
-Select * From AuditReq.dbo.connectionsRecentes 
+Select * From AuditReq.dbo.connexionsRecentes 
 Select * From auditReq.dbo.EvenementsTraites with (nolock)
 Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 order by dateSuivi
@@ -710,8 +820,8 @@ Select top 3
   ev.server_principal_name
 , ev.session_id
 , ev.event_time
---, Hc.program_name
---, Hc.Client_net_address
+, Hc.program_name
+, Hc.Client_net_address
 , ev.database_name
 , ev.statement 
 , ev.sql_batch
@@ -746,7 +856,7 @@ From
   OUTER APPLY 
   (
   Select TOP 1 Hc.Program_name, Hc.Client_net_address 
-  From Auditreq.dbo.connectionsRecentes as Hc
+  From Auditreq.dbo.connexionsRecentes as Hc
   Where Hc.LoginName = ev.server_principal_name 
     And Hc.session_id = ev.session_id
     And Hc.LoginTime < ev.event_time
