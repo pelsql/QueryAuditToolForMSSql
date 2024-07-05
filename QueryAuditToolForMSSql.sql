@@ -2,11 +2,13 @@
 -------------------------------------------------------------------------------------------------------
 AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
 Auteur   : Maurice Pelchat
-Licence  : BSD-4
+Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
+           Prendre note des clauses de responsabilités associées à cette Licence au lien ci-dessus
 -------------------------------------------------------------------------------------------------------
 AuditReq : Tool to produce managed audit of SQL queries by the mean of a SQL Server database
 Auteur   : Maurice Pelchat
-Licence  : BSD-4
+Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
+           Take note of the liability clauses associated with this License at the link above
 -------------------------------------------------------------------------------------------------------
 */
 -- -----------------------------------------------------------------------------------
