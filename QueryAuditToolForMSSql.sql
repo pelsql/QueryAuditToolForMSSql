@@ -651,7 +651,7 @@ Begin
     -- et qui ont une connexion plus récente
     -- un session_id peut cesser d'exister, et ses transactions ne sont pas toutes traitées
     -- mais en pratique on en aura quelques unes
-    Delete RC
+    Delete RC 
     From 
       (
       Select LoginName, session_id, LoginTime, connectSeq=ROW_NUMBER() Over (partition by LoginName order by LoginTime Desc)
@@ -664,7 +664,7 @@ Begin
           from sys.dm_exec_sessions S 
           Where S.Login_Name = Rc.LoginName and S.Session_id= Rc.Session_id      
           ) -- connexion fermée
-      And DATEDIFF(hh, LoginTime, GETDATE()) > 1 -- déconnecté depuis 1 heure 
+      And DATEDIFF(minute, LoginTime, GETDATE()) > 60 -- déconnecté depuis 1 heure 
 
   End -- While forever
 
