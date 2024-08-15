@@ -1,5 +1,7 @@
 # QueryAuditToolForMSSQL
 
+Version 1.0
+
 Cet outil, déployable en un seul script SQL, réunit plusiers automatismes SQL à des fins d'audit de requêtes.
 
 - Il est basé sur l'utilisation des Extended Events de SQL Server.

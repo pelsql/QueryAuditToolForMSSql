@@ -1,4 +1,5 @@
 ﻿/*
+AuditReq Version 1.0
 -------------------------------------------------------------------------------------------------------
 AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
 Auteur   : Maurice Pelchat
@@ -17,13 +18,26 @@ Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICE
 -- -----------------------------------------------------------------------------------
 Use tempdb
 go
+
+Declare @MemOptimizedData Sysname
+Select @MemOptimizedData = Cast(SERVERPROPERTY('InstanceDefaultDataPath') as sysname)+N'AuditReq_mod'
+
 If DB_ID('AuditReq') IS NULL -- créer database si absente
 Begin 
-  CREATE DATABASE [AuditReq]
-  alter DATABASE [AuditReq] Set recovery simple
-  alter database  [AuditReq] modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
-  alter database  [AuditReq] modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
-End
+  CREATE DATABASE AuditReq
+  alter DATABASE AuditReq Set recovery simple
+  alter database  AuditReq modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
+  alter database  AuditReq modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
+  ALTER DATABASE AuditReq ADD FILEGROUP AuditReq_mod CONTAINS MEMORY_OPTIMIZED_DATA;
+  Exec
+  (
+  '
+  ALTER DATABASE AuditReq
+  ADD FILE (NAME = ''AuditReq_mod'', FILENAME='''+@MemOptimizedData+''', MAXSIZE = UNLIMITED) 
+  TO FILEGROUP AuditReq_mod;
+  '
+  )
+END
 go
 USE AuditReq
 go
@@ -124,27 +138,27 @@ if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
 GO
 drop trigger if exists LogonAuditReqTrigger on all server
 go
-Drop table if exists dbo.connectionsRecentes -- changement de nom p/r versions antérieures
 Drop table if exists dbo.connexionsRecentes
 CREATE TABLE dbo.connexionsRecentes
 (
-	 LoginName nvarchar(256) NULL
-, Session_id smallint NULL
-, LoginTime datetime2  NULL
+	 LoginName nvarchar(256) NOT NULL
+, Session_id smallint NOT NULL
+, LoginTime datetime2  NOT NULL
+, Seq BigInt Identity
 , Client_net_address nvarchar(48) NULL
 , program_name sysname NULL
+, CONSTRAINT PK_connexionsRecentes PRIMARY KEY NONCLUSTERED (Session_id, LoginName, LoginTime)
 ) 
+WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_AND_DATA);
 go
-create unique clustered index iconnexionsRecentes 
-on dbo.connexionsRecentes (Session_id, LoginName, LoginTime Desc)
-GO
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
-IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
 go
 Use AuditReq;
 IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
+go
+IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
 go
 Use Master;
 declare @unknownPwd nvarchar(100) = convert(nvarchar(400), HASHBYTES('SHA1', convert(nvarchar(100),newid())), 2)
@@ -168,8 +182,14 @@ ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
 AS
 BEGIN
-  Begin Try
 
+  -- bloque l'accès à la table pour la durée de la courte l'opération
+  Declare @loginName  Sysname
+  -- va chercher le pédigree de la connexion qui s'établit.
+  -- la sérialisation évite que le not exists soit testé en même temps à vide et que ça crée 
+  -- une duplication à l'insert.
+  -- alternative aux tables optimisées en mémoire qui sont moins sujet à problème de verrous concurrents
+  --Select Top 1 @loginName=loginName From AuditReq.dbo.connexionsRecentes With (TabLockX)
   Insert into AuditReq.dbo.connexionsRecentes
    (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
   select
@@ -180,11 +200,15 @@ BEGIN
     CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
     JOIN (select * from master.sys.dm_exec_sessions) as S
     ON S.session_id = Evi.Spid And S.is_user_process=1
-  UNION  -- provoque effet du distinct à cause de très rares cas, peu explicables dans la première et seconde requête
+  -- si on vient d'installer ce script (donc que AuditReq.dbo.connexionsRecentes est vide)
+  -- obtenir les connexions récentes et les y ajouter.
+  -- La clause UNION empêche que la connexion existante qui vient de s'ouvrir soit déboublée
+  -- avec celles de master.sys.dm_exec_sessions
+  
+  UNION  -- provoque effet de distinct 
 
-  -- quand on démarre, le logon trigger n'enregistre que les nouvelles
-  -- mais il faut faire comme s'il avait enregistré les connexions déjà ouvertes
-  -- lorsque la table est vide
+  -- Cette partie de la requête ne retourne quelque chose qu'à l'installation 
+  -- de ce script ou à sa réinistallation.
   select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
   from 
     (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
@@ -192,10 +216,7 @@ BEGIN
     sys.dm_exec_connections as C
     ON C.session_id = S.session_id
   Where Not Exists (Select * From AuditReq.dbo.connexionsRecentes)
-  End Try
-  Begin Catch
-    THROW;
-  End Catch
+
 END;
 GO
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
@@ -351,6 +372,7 @@ From
   CROSS APPLY (select Tab=OBJECT_SCHEMA_NAME(object_id)+Dot+name from sys.tables) as Tab
   CROSS APPLY (Select Sql0=Replace(CompressTemplate, '#Tab#', Tab) ) as Sql0
   CROSS APPLY (Select Sql=Replace(sql0, '#Opt#', Opt) ) as Sql
+Where Tab not like 'dbo.connexionsRecentes'
 Exec (@Sql)
 GO
 -- --------------------------------------------------------------------------------
@@ -636,7 +658,7 @@ Begin
       From dbo.connexionsRecentes as RC
       ) as Rc
     Where connectSeq > 1 -- connexion passée, parce que connects=1 
-      And Not Exists -- si une session d'un utilisateur semble être du passé, on patiente 1 heure pour être sûr qu'elle a été traitée
+      And Not Exists -- si une session d'un LoginName semble être du passé, on patiente 1 heure pour être sûr qu'elle a été traitée
           (
           Select SESSION_ID 
           from sys.dm_exec_sessions S 
@@ -660,8 +682,35 @@ End
 go
 USE [msdb]
 GO
-
-/****** Object:  Job [AuditReq]    Script Date: 2024-06-29 09:23:36 ******/
+Create or Alter Function dbo.HostMostUsedByLoginName(@LoginName sysname = 'Pelletierr')
+Returns Table
+as
+Return
+Select Top 1 LoginName, client_net_address -- parce que les rangées sont toutes pareilles
+From 
+  (
+  Select 
+    LoginName
+  , client_net_address
+  , nbOccclient_net_address
+  , plusFrequent=MAX(nbOccclient_net_address) Over (Partition by LoginName)
+  From
+    ( -- ajouter 
+    Select LoginName, client_net_address, nbOccclient_net_address=count(*) Over (Partition by LoginName, client_net_address)
+    From
+      (Select PrmUtil=@LoginName) as P
+      CROSS APPLY 
+      (
+      Select Top 10 LoginName, client_net_address, LoginTime
+      FROM AuditReq.dbo.connexionsRecentes 
+      Where LoginName=P.PrmUtil
+      Order By LoginName, LoginTime Desc
+      ) As DixDerniersPostesParLoginName
+    ) as DecompteOrdis
+  ) as LigneFreq
+Where nbOccclient_net_address=plusFrequent
+go
+/****** Object:  Job AuditReq    Script Date: 2024-06-29 09:23:36 ******/
 Begin Try 
 
   BEGIN TRANSACTION;
@@ -772,13 +821,13 @@ GO
 --order by file_name, last_Offset_done
 
 /*
-Select session_id--, sql_batch
-, statement 
+Select *--session_id--, sql_batch, statement 
 From auditReq.dbo.AuditComplet with (nolock) 
 order by event_time
 
 -- trace pour tests
-Select * From AuditReq.dbo.connexionsRecentes 
+Select ntile(3) over (order by logintime), * 
+From AuditReq.dbo.connexionsRecentes order by logintime
 Select * From auditReq.dbo.EvenementsTraites with (nolock)
 Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 order by dateSuivi
