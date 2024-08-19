@@ -25,7 +25,7 @@ Select @MemOptimizedData = Cast(SERVERPROPERTY('InstanceDefaultDataPath') as sys
 If DB_ID('AuditReq') IS NULL -- créer database si absente
 Begin 
   CREATE DATABASE AuditReq
-  alter DATABASE AuditReq Set recovery simple
+  alter DATABASE AuditReq Set recovery FULL
   alter database  AuditReq modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
   alter database  AuditReq modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
   ALTER DATABASE AuditReq ADD FILEGROUP AuditReq_mod CONTAINS MEMORY_OPTIMIZED_DATA;
