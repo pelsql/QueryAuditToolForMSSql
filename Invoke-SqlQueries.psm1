@@ -147,11 +147,11 @@
 
     if ($user -ne '')
     {
-        $SqlCon = new-object System.Data.SqlClient.SQLConnection("Data Source=$serverInstance;User=$User;Password=$pwd;Initial Catalog=$database;Application Name=Invoke-SqlQueries");
+        $SqlCon = new-object System.Data.SqlClient.SQLConnection("Data Source=$serverInstance;User=$User;Password=$pwd;Initial Catalog=$database;App=Invoke-SqlQueries");
     }
     else
     {
-        $SqlCon = new-object System.Data.SqlClient.SQLConnection("Data Source=$serverInstance;Trusted_Connection=True;Initial Catalog=$database;Application Name=Invoke-SqlQueries");
+        $SqlCon = new-object System.Data.SqlClient.SQLConnection("Data Source=$serverInstance;Trusted_Connection=True;Initial Catalog=$database;App=Invoke-SqlQueries;WSID=Contournement");
     }
     
     # ----- Le Handler

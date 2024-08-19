@@ -1,5 +1,9 @@
 ﻿/*
 AuditReq Version 1.0
+-- -----------------------------------------------------------------------------------
+-- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
+-- DANS LA VUE DBO.ENUMSETOPT
+-- -----------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
 Auteur   : Maurice Pelchat
@@ -12,10 +16,6 @@ Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICE
            Take note of the liability clauses associated with this License at the link above
 -------------------------------------------------------------------------------------------------------
 */
--- -----------------------------------------------------------------------------------
--- Avant de démarrer ce script ajuster les options de nom de fichier et de répertoire
--- dans la vue Dbo.EnumsEtOpt
--- -----------------------------------------------------------------------------------
 Use tempdb
 go
 
@@ -39,8 +39,57 @@ Begin
   )
 END
 go
-USE AuditReq
+USE master 
+DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for convenience when testing
+GO
+Use AuditReq;
 go
+Drop function if exists dbo.FormatCurrentMsg
+Drop procedure if exists dbo.SendEMail
+go
+IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
+go
+IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
+go
+Create Or Alter View Dbo.EnumsEtOpt
+as
+Select *, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
+From 
+  (
+  Select 
+    MatchFichTrc='AuditReq*.xel' -- ne pas changer
+  , BaseFn='AuditReq.Xel' -- ne pas changer
+  , RootAboveDir='D:\_Tmp\' -- ajuster
+  , Dir='AuditReq' -- ne pas changer
+  , PrefixMsgFichPerdu='Fichier audit perdu: '
+  , ErrMsgTemplate=
+'----------------------------------------------------------------------------------------------
+ -- Msg: #ErrMessage#
+ -- Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
+ ----------------------------------------------------------------------------------------------'
+  , ErrMsgTemplateShort=' Msg: #ErrMessage# Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#'
+  ) as Base
+  CROSS APPLY (Select RepFich=RootAboveDir+Dir) as RootAboveDir
+  CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
+  CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
+  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+BaseFn) as TargetFnCreateEvent
+-- select * from Dbo.EnumsEtOpt
+GO
+If Not Exists
+   (
+   Select * 
+   FROM 
+     Dbo.EnumsEtOpt as E 
+     CROSS APPLY sys.dm_os_enumerate_filesystem(RootAboveDir, Dir) as F
+   where is_directory=1
+   ) 
+Begin
+  Declare @repFich sysname; Select @repFich = repfich from dbo.EnumsEtOpt
+  Raiserror ('Le répertoire %s n''existe pas', 11, 1, @repfich)
+End 
+GO
+if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
+GO
 Create Or Alter Function dbo.FormatRunTimeMsg 
 (
   @MsgTemplate Nvarchar(max)
@@ -57,7 +106,7 @@ Return
 (
 Select *
 From 
-  (Select ErrorMsgFormatTemplate=@MsgTemplate) as MsgTemplate
+  (Select ErrorMsgFormatTemplate=ISNULL(@MsgTemplate, E.ErrMsgTemplate) From dbo.EnumsEtOpt as E) as MsgTemplate
   CROSS APPLY (Select ErrMessage=@error_message) as ErrMessage
   CROSS APPLY (SeLect ErrNumber=@error_number) as ErrNumber
   CROSS APPLY (SeLect ErrSeverity=@error_severity) as ErrSeverity
@@ -97,45 +146,6 @@ Begin Catch
 End catch
 */
 GO
-Create Or Alter View Dbo.EnumsEtOpt
-as
-Select *, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
-From 
-  (
-  Select 
-    MatchFichTrc='AuditReq*.xel'
-  , BaseFn='AuditReq.Xel'
-  , RootAboveDir='D:\_Tmp\'
-  , Dir='AuditReq'
-  , PrefixMsgFichPerdu='Fichier audit perdu: '
-  , ErrMsgTemplate=
-'----------------------------------------------------------------------------------------------
- -- Msg: #ErrMessage#
- -- Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
- ----------------------------------------------------------------------------------------------'
-  , ErrMsgTemplateShort=' Msg: #ErrMessage# Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#'
-  ) as Base
-  CROSS APPLY (Select RepFich=RootAboveDir+Dir) as RootAboveDir
-  CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
-  CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
-  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+BaseFn) as TargetFnCreateEvent
--- select * from Dbo.EnumsEtOpt
-GO
-If Not Exists
-   (
-   Select * 
-   FROM 
-     Dbo.EnumsEtOpt as E 
-     CROSS APPLY sys.dm_os_enumerate_filesystem(RootAboveDir, Dir) as F
-   where is_directory=1
-   ) 
-Begin
-  Declare @repFich sysname; Select @repFich = repfich from dbo.EnumsEtOpt
-  Raiserror ('Le répertoire %s n''existe pas', 11, 1, @repfich)
-End 
-GO
-if @@TRANCOUNT>0 Rollback -- quand on test d'ici la sp
-GO
 drop trigger if exists LogonAuditReqTrigger on all server
 go
 Drop table if exists dbo.connexionsRecentes
@@ -143,22 +153,20 @@ CREATE TABLE dbo.connexionsRecentes
 (
 	 LoginName nvarchar(256) NOT NULL
 , Session_id smallint NOT NULL
-, LoginTime datetime2  NOT NULL
-, Seq BigInt Identity
+  -- dans certains cas rares, il se peut qu'une connection s'ouvre, se ferme et se réouvre dans un espace de temps
+  -- qui fait que le login_time qu'on pourrait prendre de sys.dm_exec_sessions ne change pas, car il n'a pas 
+  -- assez de précision. Aussi on initialise ce champ avec sysdatetime().
+, LoginTime datetime2(7)  NOT NULL
 , Client_net_address nvarchar(48) NULL
 , program_name sysname NULL
 , CONSTRAINT PK_connexionsRecentes PRIMARY KEY NONCLUSTERED (Session_id, LoginName, LoginTime)
 ) 
 WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_AND_DATA);
 go
+
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
-go
-Use AuditReq;
-IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
-go
-IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
 go
 Use Master;
 declare @unknownPwd nvarchar(100) = convert(nvarchar(400), HASHBYTES('SHA1', convert(nvarchar(100),newid())), 2)
@@ -174,8 +182,13 @@ GRANT VIEW SERVER STATE TO [AuditReqUser];
 GO
 Use AuditReq;
 CREATE USER AuditReqUser For Login AuditReqUser;
+GO
 GRANT INSERT, SELECT ON [dbo].[connexionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
+GRANT SELECT ON dbo.FormatCurrentMsg TO AuditReqUser; -- Utiles pour former msg erreur
+GO
 USE master
+GO
+DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for convenience when testing
 GO
 CREATE or Alter TRIGGER LogonAuditReqTrigger 
 ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
@@ -183,46 +196,56 @@ FOR LOGON
 AS
 BEGIN
 
-  -- bloque l'accès à la table pour la durée de la courte l'opération
-  Declare @loginName  Sysname
   -- va chercher le pédigree de la connexion qui s'établit.
-  -- la sérialisation évite que le not exists soit testé en même temps à vide et que ça crée 
-  -- une duplication à l'insert.
-  -- alternative aux tables optimisées en mémoire qui sont moins sujet à problème de verrous concurrents
-  --Select Top 1 @loginName=loginName From AuditReq.dbo.connexionsRecentes With (TabLockX)
-  Insert into AuditReq.dbo.connexionsRecentes
-   (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
-  select
-    ORIGINAL_LOGIN(), Evi.Spid,   S.Login_Time,  A.client_net_address , S.program_name 
-  From 
-    (Select EventData=EVENTDATA()) as EvD
-    CROSS APPLY (Select Spid=EventData.value('(/EVENT_INSTANCE/SPID)[1]', 'INT')) as Evi
-    CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
-    JOIN (select * from master.sys.dm_exec_sessions) as S
-    ON S.session_id = Evi.Spid And S.is_user_process=1
-  -- si on vient d'installer ce script (donc que AuditReq.dbo.connexionsRecentes est vide)
-  -- obtenir les connexions récentes et les y ajouter.
-  -- La clause UNION empêche que la connexion existante qui vient de s'ouvrir soit déboublée
-  -- avec celles de master.sys.dm_exec_sessions
-  
-  UNION  -- provoque effet de distinct 
-
-  -- Cette partie de la requête ne retourne quelque chose qu'à l'installation 
-  -- de ce script ou à sa réinistallation.
-  select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-  from 
-    (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-    JOIN 
-    sys.dm_exec_connections as C
-    ON C.session_id = S.session_id
-  Where Not Exists (Select * From AuditReq.dbo.connexionsRecentes)
-
+  -- inséré dans une table optimisée en mémoire pcq plus vite.
+  -- Note importante. Un poste qui n'est pas dans un réseau microsoft mais qui a un compte microsoft dans windows
+  -- retourne le compte microsoft pour ORIGINAL_LOGIN(). ORIGINAL_LOGIN() n'est pas en cause
+  -- SQL est inconsistant sur la valeur retournée ici avec le trigger de login, vs celles des traces, et des evènements
+  -- il prend soit le compte local mappé par défaut au compte microsoft, soit directement le compte microsoft
+  Begin Try
+    --declare @i int; select @i=1/0; -- raising an error for testing message logging into sql server error log
+    Insert into AuditReq.dbo.connexionsRecentes
+     (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
+    select
+      ORIGINAL_LOGIN(), Evi.Spid,   SYSDATETIME(),  A.client_net_address , S.program_name 
+    From 
+      (Select EventData=EVENTDATA()) as EvD
+      CROSS APPLY (Select Spid=EventData.value('(/EVENT_INSTANCE/SPID)[1]', 'INT')) as Evi
+      CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
+      LEFT JOIN (select * from master.sys.dm_exec_sessions) as S 
+      ON S.session_id = Evi.Spid And S.is_user_process=1 
+      LEFT JOIN sys.server_principals ON sid = SUSER_SID (ORIGINAL_LOGIN())
+    Where Evi.Spid>50 -- exclure les connexions systèmes au cas où
+  End Try
+  Begin Catch
+    -- en état d'erreur on ne peut écrire dans aucune table, car la transaction va s'annuler quand même
+    -- le mieux qu'on peut faire est de formatter l'erreur qui est redirigée dans le log de SQL Server
+    Declare @msg nvarchar(4000) 
+    Select @msg = 'Error in Logon trigger: LogonAuditReqTrigger'+nchar(10)+ErrMsg 
+    From AuditReq.dbo.FormatCurrentMsg (null)
+    Print @Msg
+  End Catch
 END;
 GO
+USE AuditReq
+GO
+-- cette table permet de conserver les connexions qui ont été mises dans la table mémoire et soulager la table en
+-- mémoire de ses enregistrements
+Drop table if exists dbo.HistoriqueConnexions
+CREATE TABLE dbo.HistoriqueConnexions
+(
+	 LoginName nvarchar(256) NOT NULL
+, Session_id smallint NOT NULL
+, LoginTime datetime2(7)  NOT NULL
+, Client_net_address nvarchar(48) NULL
+, program_name sysname NULL
+, CONSTRAINT PK_HistoriqueConnexions 
+  PRIMARY KEY CLUSTERED (Session_id, LoginName, LoginTime Desc)
+) 
+go
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
 GO
-USE AuditReq
 -- Supprimer la session si elle existe et nettoyer ses fichiers de trace
 Declare @Fn nvarchar(260)
 Select @Fn=E.PathReadFileTargetPrm From dbo.EnumsEtOpt as E
@@ -411,18 +434,22 @@ Begin
     Inserted as I
     -- Un même login peut se connecter et se reconnecter avec un peu de chance de réobtenir le meme spid
     -- On va chercher la connexion qui précède de plus près le moment de la requête
-    -- (la plus grande (en ordre décroissant) de LoginTime (temps connexion) < event_time (de la requête)
+    -- (la plus grande (en ordre décroissant) de LoginTime (temps connexion) <= event_time (de la requête)
     -- pour le même numéro de session, loginName
     -- ici on a un outer apply pour le cas très improbable que la connextion ait été ôté de l'historique
     -- parce qu'elle y a été laissée très longtemps sans qu'on en traite les évènements
     -- mais on ne perdra pas le reste, le login, le moment, le numero de session, les requêtes
+
+    -- D'autre part, lorsque c'est un poste autonome et qu'on se loggue sur le compte microsoft en sécurité intégrée 
+    -- Il y a inconsistence entre le login_name dans le trigger de login et ensuite dans les traces
+    -- Le trigger de login prend le compte microsoft, et le reste le compte local associé au compte
     OUTER APPLY 
     (
     Select TOP 1 Hc.Program_name, Hc.Client_net_address 
-    From Auditreq.dbo.connexionsRecentes as Hc
+    From Auditreq.dbo.HistoriqueConnexions as Hc
     Where Hc.LoginName = I.server_principal_name 
       And Hc.session_id = I.session_id
-      And Hc.LoginTime < I.event_time
+      And Hc.LoginTime <= I.event_time
     Order by Session_id, LoginName, LoginTime desc
     ) Hc
 
@@ -467,6 +494,7 @@ Begin
     From 
       (Select ErrMsgTemplate From dbo.EnumsEtOpt) as E
       CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
+    Insert Into dbo.LogTraitementAudit(Msg) Values (@msg)
     RAISERROR(@msg,11,1)
   End Catch
 
@@ -479,9 +507,56 @@ Begin
 
   Begin Try
 
+  Drop table if Exists #ConnAjouteesAHistorique 
+  Select top 0 LoginName, Session_id, LoginTime 
+  Into #ConnAjouteesAHistorique 
+  From dbo.connexionsRecentes
+  Create clustered index iConnAjouteesAHistorique -- pour provoquer la création de statistiques
+  On #ConnAjouteesAHistorique(Session_id, LoginName, LoginTime Desc)
+
   Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
   Begin
+    Insert into AuditReq.dbo.HistoriqueConnexions
+          (LoginName, Session_id, LoginTime, client_net_address, program_name)
+    Output inserted.LoginName, inserted.Session_id, inserted.LoginTime
+    Into #ConnAjouteesAHistorique
+
+    -- Cette partie de la requête ne retourne quelque chose qu'à l'installation 
+    -- de ce script ou à sa réinistallation quand AuditReq.dbo.HistoriqueConnexions est vide
+    select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
+    From 
+      -- première expression ne retourne rien si table a du contenu
+      (select Dummy=1 Where Not Exists (Select * From AuditReq.dbo.HistoriqueConnexions)) As Dummy
+      -- rien + cross join = cancel de la suite
+      CROSS JOIN
+      (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
+      JOIN 
+      sys.dm_exec_connections as C
+      ON C.session_id = S.session_id
+
+    UNION  -- provoque effet de distinct 
+
+    select LoginName, Session_id, LoginTime, client_net_address, program_name
+    From 
+      AuditReq.dbo.connexionsRecentes
+    -- si on vient d'installer ce script (donc que AuditReq.dbo.HistoriqueConnexions est vide)
+    -- fusionner les connexions récentes et celles déjà actives et les y ajouter.
+    -- La clause UNION empêche que la connexion existante qui vient de s'ouvrir soit déboublée
+    -- avec celles de master.sys.dm_exec_sessions
+  
+    -- ôte specifiquement ce qui a été inséré à partir de dbo.connexionsRecentes
+    Delete C
+    From 
+      #ConnAjouteesAHistorique CT
+      INNER LOOP JOIN
+      dbo.connexionsRecentes as C
+      ON  C.Session_id = CT.Session_id 
+      And C.LoginName = CT.LoginName 
+      And C.LoginTime = CT.LoginTime
+
+    -- ôte copie de ce qui a été inséré par inserted
+    Truncate table #ConnAjouteesAHistorique
 
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
     -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
@@ -528,6 +603,10 @@ Begin
       FROM sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
       CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
       ) as ev
+    Where session_id>50
+      -- si on traitait toute les requêtes on pourrait mettre le code du module SQL dans SQL+Batch seulement
+      -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
+      -- actuellement on ne le fait pas, et statement est tout le module au démarrage de ce dernier.
       --OUTER APPLY 
       --(
       --Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
@@ -675,8 +754,8 @@ Begin
     From 
       (Select ErrMsgTemplate From dbo.EnumsEtOpt) as E
       CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
-    RAISERROR(@msg,11,1)
     Insert into dbo.LogTraitementAudit (Msg) values (@msg)
+    RAISERROR(@msg,11,1)
   End Catch
 End
 go
@@ -766,8 +845,7 @@ Begin catch
   Declare @msg nvarchar(max)
   Select @msg = F.ErrMsg
   From 
-    AuditReq.dbo.EnumsEtOpt as E
-    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+    AuditReq.dbo.FormatCurrentMsg (NULL) as F
   Print @msg
 End catch	
 ', 
@@ -808,12 +886,12 @@ Begin catch
   Declare @msg nvarchar(max)
   Select @msg = F.ErrMsg
   From 
-    AuditReq.dbo.EnumsEtOpt as E
-    CROSS APPLY AuditReq.dbo.FormatCurrentMsg (E.ErrMsgTemplate) as F
+    AuditReq.dbo.FormatCurrentMsg (NULL) as F
   Print @msg
   ROLLBACK
 End catch
 GO
+Use AuditReq
 
 --Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
@@ -821,6 +899,7 @@ GO
 --order by file_name, last_Offset_done
 
 /*
+
 Select *--session_id--, sql_batch, statement 
 From auditReq.dbo.AuditComplet with (nolock) 
 order by event_time
