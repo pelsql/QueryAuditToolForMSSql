@@ -1,0 +1,4 @@
+Ne pas oublier:
+Si la job arrête sur une erreur, elle ne donnera pas nécessairement une erreur. Donc on la roule à la main pour la voir.
+Il y a aussi la table dbo.LogTraitementAudit qui loggue des messages d'erreur ou non.
+Voir les autres fichiers commençant par tester...

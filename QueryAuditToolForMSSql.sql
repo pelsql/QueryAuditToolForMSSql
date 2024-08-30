@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 1.0
+AuditReq Version 2.0
 -- -----------------------------------------------------------------------------------
 -- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
 -- DANS LA VUE DBO.ENUMSETOPT
@@ -18,31 +18,49 @@ Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICE
 */
 Use tempdb
 go
-
-Declare @MemOptimizedData Sysname
-Select @MemOptimizedData = Cast(SERVERPROPERTY('InstanceDefaultDataPath') as sysname)+N'AuditReq_mod'
-
+-- si on repasse le script il faut faire sauter le trigger
+DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for convenience when testing
+GO
+If DB_ID('AuditReq') IS NOT NULL -- déconecter tout le monde de la database si présente
+Begin
+  Print 'Kick tout le monde dehors de AuditReq'
+  Use AuditReq
+  Alter database AuditReq Set Single_User With Rollback Immediate
+End
+Go
+If DB_ID('AuditReq') IS NOT NULL -- détruire database si présente
+Begin
+  Use Tempdb
+  Print 'Drop Database AuditReq'
+  Drop database AuditReq
+ENd
+GO
 If DB_ID('AuditReq') IS NULL -- créer database si absente
 Begin 
   CREATE DATABASE AuditReq
   alter DATABASE AuditReq Set recovery FULL
-  alter database  AuditReq modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
-  alter database  AuditReq modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
-  ALTER DATABASE AuditReq ADD FILEGROUP AuditReq_mod CONTAINS MEMORY_OPTIMIZED_DATA;
-  Exec
-  (
-  '
-  ALTER DATABASE AuditReq
-  ADD FILE (NAME = ''AuditReq_mod'', FILENAME='''+@MemOptimizedData+''', MAXSIZE = UNLIMITED) 
-  TO FILEGROUP AuditReq_mod;
-  '
-  )
+  alter database AuditReq modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
+  alter database AuditReq modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
 END
 go
 USE master 
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for convenience when testing
 GO
 Use AuditReq;
+GO
+-- cette table permet de conserver les connexions 
+Drop table if exists dbo.HistoriqueConnexions
+CREATE TABLE dbo.HistoriqueConnexions
+(
+	 LoginName nvarchar(256) NOT NULL
+, Session_id smallint NOT NULL
+, LoginTime datetime2(7)  NOT NULL
+, Client_net_address nvarchar(48) NULL
+, client_app_name sysname
+, event_sequence BigInt
+, CONSTRAINT PK_HistoriqueConnexions 
+  PRIMARY KEY CLUSTERED (Session_id, Event_Sequence Desc, loginTime)
+) 
 go
 Drop function if exists dbo.FormatCurrentMsg
 Drop procedure if exists dbo.SendEMail
@@ -51,6 +69,8 @@ IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
 go
 IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
 go
+Use AuditReq
+GO
 Create Or Alter View Dbo.EnumsEtOpt
 as
 Select *, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
@@ -146,24 +166,6 @@ Begin Catch
 End catch
 */
 GO
-drop trigger if exists LogonAuditReqTrigger on all server
-go
-Drop table if exists dbo.connexionsRecentes
-CREATE TABLE dbo.connexionsRecentes
-(
-	 LoginName nvarchar(256) NOT NULL
-, Session_id smallint NOT NULL
-  -- dans certains cas rares, il se peut qu'une connection s'ouvre, se ferme et se réouvre dans un espace de temps
-  -- qui fait que le login_time qu'on pourrait prendre de sys.dm_exec_sessions ne change pas, car il n'a pas 
-  -- assez de précision. Aussi on initialise ce champ avec sysdatetime().
-, LoginTime datetime2(7)  NOT NULL
-, Client_net_address nvarchar(48) NULL
-, program_name sysname NULL
-, CONSTRAINT PK_connexionsRecentes PRIMARY KEY NONCLUSTERED (Session_id, LoginName, LoginTime)
-) 
-WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_AND_DATA);
-go
-
 -- DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;
 Use master;
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
@@ -179,16 +181,27 @@ With Password = '''+@unknownPwd+'''
    , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
 )
 GRANT VIEW SERVER STATE TO [AuditReqUser];
+GRANT ALTER TRACE TO [AuditReqUser];
 GO
 Use AuditReq;
 CREATE USER AuditReqUser For Login AuditReqUser;
 GO
-GRANT INSERT, SELECT ON [dbo].[connexionsRecentes] TO AuditReqUser; -- le user dans la BD AuditReq
 GRANT SELECT ON dbo.FormatCurrentMsg TO AuditReqUser; -- Utiles pour former msg erreur
 GO
 USE master
 GO
 DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for convenience when testing
+GO
+-- initialiser le plus près possible les connexions déjà existantes et laisser 
+-- le trigger permettre l'enregistrement des suivantes
+Insert into AuditReq.dbo.HistoriqueConnexions
+(LoginName, Session_id, LoginTime, Client_net_address, client_app_name, event_sequence)
+Select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name, 0
+From 
+  (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
+  JOIN 
+  sys.dm_exec_connections as C
+  ON C.session_id = S.session_id
 GO
 CREATE or Alter TRIGGER LogonAuditReqTrigger 
 ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
@@ -196,26 +209,34 @@ FOR LOGON
 AS
 BEGIN
 
-  -- va chercher le pédigree de la connexion qui s'établit.
-  -- inséré dans une table optimisée en mémoire pcq plus vite.
-  -- Note importante. Un poste qui n'est pas dans un réseau microsoft mais qui a un compte microsoft dans windows
-  -- retourne le compte microsoft pour ORIGINAL_LOGIN(). ORIGINAL_LOGIN() n'est pas en cause
-  -- SQL est inconsistant sur la valeur retournée ici avec le trigger de login, vs celles des traces, et des evènements
-  -- il prend soit le compte local mappé par défaut au compte microsoft, soit directement le compte microsoft
+  DECLARE @JEventDataBinary Varbinary(8000);
   Begin Try
-    --declare @i int; select @i=1/0; -- raising an error for testing message logging into sql server error log
-    Insert into AuditReq.dbo.connexionsRecentes
-     (LoginName       , Session_id, LoginTime,     client_net_address   , program_name)
-    select
-      ORIGINAL_LOGIN(), Evi.Spid,   SYSDATETIME(),  A.client_net_address , S.program_name 
+    Select @JEventDataBinary = JEventDataBinary
     From 
       (Select EventData=EVENTDATA()) as EvD
       CROSS APPLY (Select Spid=EventData.value('(/EVENT_INSTANCE/SPID)[1]', 'INT')) as Evi
       CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
       LEFT JOIN (select * from master.sys.dm_exec_sessions) as S 
       ON S.session_id = Evi.Spid And S.is_user_process=1 
-      LEFT JOIN sys.server_principals ON sid = SUSER_SID (ORIGINAL_LOGIN())
-    Where Evi.Spid>50 -- exclure les connexions systèmes au cas où
+      CROSS APPLY 
+      (
+      Select -- met en json plusieurs données propre au login, dont le client_net_address
+        JEventData= 
+        (
+        Select 
+          LoginName=ORIGINAL_LOGIN()
+        , LoginTime=SYSDATETIME()
+        , Evi.spid 
+        , A.client_net_address
+        , client_app_name = S.program_name 
+        For Json PATH
+        )
+      ) as JEventData
+      CROSS APPLY (Select JEventDataBinary=CAST(JEventData as Varbinary(8000))) as JEventDataBinary
+
+    -- Event ID (must be between 82 and 91)
+    EXEC sp_trace_generateevent @eventid = 82, @userinfo = N'LoginTrace', @UserData=@JEventDataBinary
+
   End Try
   Begin Catch
     -- en état d'erreur on ne peut écrire dans aucune table, car la transaction va s'annuler quand même
@@ -227,28 +248,12 @@ BEGIN
   End Catch
 END;
 GO
-USE AuditReq
-GO
--- cette table permet de conserver les connexions qui ont été mises dans la table mémoire et soulager la table en
--- mémoire de ses enregistrements
-Drop table if exists dbo.HistoriqueConnexions
-CREATE TABLE dbo.HistoriqueConnexions
-(
-	 LoginName nvarchar(256) NOT NULL
-, Session_id smallint NOT NULL
-, LoginTime datetime2(7)  NOT NULL
-, Client_net_address nvarchar(48) NULL
-, program_name sysname NULL
-, CONSTRAINT PK_HistoriqueConnexions 
-  PRIMARY KEY CLUSTERED (Session_id, LoginName, LoginTime Desc)
-) 
-go
 If Exists(Select * From sys.dm_xe_sessions Where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP;
 GO
 -- Supprimer la session si elle existe et nettoyer ses fichiers de trace
 Declare @Fn nvarchar(260)
-Select @Fn=E.PathReadFileTargetPrm From dbo.EnumsEtOpt as E
+Select @Fn=E.PathReadFileTargetPrm From AuditReq.dbo.EnumsEtOpt as E
 IF EXISTS (SELECT * FROM sys.server_event_sessions WHERE name = 'AuditReq')
 Begin
   DROP EVENT SESSION AuditReq ON SERVER;
@@ -256,7 +261,7 @@ Begin
 End
 go
 declare @FullFn sysname; -- création event Session
-Select @FullFn=E.TargetFnCreateEvent From Dbo.EnumsEtOpt as e;
+Select @FullFn=E.TargetFnCreateEvent From AuditReq.Dbo.EnumsEtOpt as e;
 -- sp_statement_completed (statement = chaque requete, sql_text le call)
 -- sql_stmt_completed (statement = chaque requete, sql_text le lot)
 -- pour sql_stmt_completed on peut donc alléger le traitement en omettant sql_text
@@ -264,7 +269,11 @@ Select @FullFn=E.TargetFnCreateEvent From Dbo.EnumsEtOpt as e;
 Declare @Sql Nvarchar(max) =
 '
 CREATE EVENT SESSION AuditReq ON SERVER
-  ADD EVENT sqlserver.sql_statement_completed
+  ADD EVENT sqlserver.user_event
+  (
+    ACTION (package0.event_sequence)
+  )
+, ADD EVENT sqlserver.sql_statement_completed
   (
     ACTION
     (    
@@ -272,6 +281,7 @@ CREATE EVENT SESSION AuditReq ON SERVER
     , sqlserver.session_id
     , sqlserver.database_name
     , sqlserver.sql_text
+    , package0.event_sequence
     )
     WHERE [sqlserver].[is_system]=(0)
   )
@@ -294,9 +304,12 @@ WITH
   );
 '
 Set @Sql=replace(@Sql, '#FullFn#', @FullFn)
+Print @sql
 Exec (@Sql);
 go
 ALTER EVENT SESSION AuditReq ON SERVER STATE = START;
+GO
+USE AuditReq
 GO
 Drop table if exists dbo.EvenementsTraites
 Create table dbo.EvenementsTraites
@@ -329,6 +342,7 @@ CREATE TABLE dbo.PipelineDeTraitementFinalDAudit
   server_principal_name varchar(50) NULL
 ,	session_id int NULL
 ,	event_time datetimeoffset(7) NULL
+, event_Sequence BigInt NULL
 , Database_name sysname NULL
 --, sql_batch nvarchar(max)
 --, line_number int
@@ -350,11 +364,12 @@ CREATE TABLE dbo.AuditComplet
 , event_time datetimeoffset(7) NULL
 , Client_net_address nvarchar(48) NULL
 ,	session_id int NULL
-, Program_name sysname NULL
+, client_app_name sysname NULL
 , database_name sysname 
 --, sql_batch nvarchar(max)
 --, line_number int
 , statement nvarchar(max) 
+, event_sequence BigInt
 , passe Int 
 , file_seq Int
 ) 
@@ -395,7 +410,6 @@ From
   CROSS APPLY (select Tab=OBJECT_SCHEMA_NAME(object_id)+Dot+name from sys.tables) as Tab
   CROSS APPLY (Select Sql0=Replace(CompressTemplate, '#Tab#', Tab) ) as Sql0
   CROSS APPLY (Select Sql=Replace(sql0, '#Opt#', Opt) ) as Sql
-Where Tab not like 'dbo.connexionsRecentes'
 Exec (@Sql)
 GO
 -- --------------------------------------------------------------------------------
@@ -419,38 +433,37 @@ Begin
   Begin Try
 
   Insert into dbo.AuditComplet 
-    ( server_principal_name, event_time, Client_net_address
-    , session_id, Program_name, database_name
+    ( server_principal_name, event_time, Client_net_address, event_sequence
+    , session_id, client_app_name, database_name
     --, sql_batch
     --, line_number
     , statement, passe, file_seq)
   Select 
-    I.server_principal_name, I.event_time, Hc.Client_net_address
-  , I.session_id, Hc.Program_name, I.database_name
+    I.server_principal_name, I.event_time, Hc.Client_net_address, I.event_Sequence
+  , I.session_id, Hc.client_app_name, I.database_name
   --, I.sql_batch
   --, I.Line_number
   , I.statement, I.passe, I.file_seq
   From 
     Inserted as I
-    -- Un même login peut se connecter et se reconnecter avec un peu de chance de réobtenir le meme spid
-    -- On va chercher la connexion qui précède de plus près le moment de la requête
-    -- (la plus grande (en ordre décroissant) de LoginTime (temps connexion) <= event_time (de la requête)
-    -- pour le même numéro de session, loginName
-    -- ici on a un outer apply pour le cas très improbable que la connextion ait été ôté de l'historique
-    -- parce qu'elle y a été laissée très longtemps sans qu'on en traite les évènements
-    -- mais on ne perdra pas le reste, le login, le moment, le numero de session, les requêtes
+    -- Un même login peut se connecter et se reconnecter avec un numéro de session différent
+    -- mais ce qu'on cherche c'est le login avec le même session_id
+    -- mais qui a la sequence la plus proche dans les évènements de requête
+    -- exemple le login de session_id=120 avec event_Sequence=130
+    -- il y a des requêtes pour cette session_id=120 avec event_sequence > 130 et < 400
+    -- cette session se termine puis une autre s'ouvre qui réutilise le même session_id 
+    -- exemple le login de session_id=120 avec event_Sequence=401
+    -- il y a  des requêtes pour ce session_id=120 avec  event_sequence > 401
+    -- donc si on veut associer les requêtes au bon login, il faut qu'il y ait égalité sur le session_id
+    -- et trouver celui dont le event_sequence est plus petit que la requête
 
-    -- D'autre part, lorsque c'est un poste autonome et qu'on se loggue sur le compte microsoft en sécurité intégrée 
-    -- Il y a inconsistence entre le login_name dans le trigger de login et ensuite dans les traces
-    -- Le trigger de login prend le compte microsoft, et le reste le compte local associé au compte
     OUTER APPLY 
     (
-    Select TOP 1 Hc.Program_name, Hc.Client_net_address 
+    Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
     From Auditreq.dbo.HistoriqueConnexions as Hc
-    Where Hc.LoginName = I.server_principal_name 
-      And Hc.session_id = I.session_id
-      And Hc.LoginTime <= I.event_time
-    Order by Session_id, LoginName, LoginTime desc
+    Where Hc.session_id = I.session_id
+      And Hc.event_Sequence < I.event_Sequence 
+    Order by Session_id, event_Sequence desc
     ) Hc
 
     Delete From dbo.AuditComplet 
@@ -500,6 +513,8 @@ Begin
 
 End
 GO
+USE AuditReq
+GO
 Create or Alter Proc dbo.CompleterInfoAudit
 as
 Begin
@@ -507,76 +522,33 @@ Begin
 
   Begin Try
 
-  Drop table if Exists #ConnAjouteesAHistorique 
-  Select top 0 LoginName, Session_id, LoginTime 
-  Into #ConnAjouteesAHistorique 
-  From dbo.connexionsRecentes
-  Create clustered index iConnAjouteesAHistorique -- pour provoquer la création de statistiques
-  On #ConnAjouteesAHistorique(Session_id, LoginName, LoginTime Desc)
+  Drop table if Exists #tmp
+  Create table #tmp 
+  (
+   	file_name nvarchar(260) NOT NULL -- selon donc sys.fn_xe_file_target_read_file
+  ,	file_Offset bigint NOT NULL -- selon donc sys.fn_xe_file_target_read_file
+  , passe int NULL
+  , file_seq int null
+  , event_name nvarchar(128)
+  , event_data XML NULL
+  )
+  Drop table if Exists #AuditLogins
+  Create Table #AuditLogins (event_Data XML NULL)
 
   Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
   Begin
-    Insert into AuditReq.dbo.HistoriqueConnexions
-          (LoginName, Session_id, LoginTime, client_net_address, program_name)
-    Output inserted.LoginName, inserted.Session_id, inserted.LoginTime
-    Into #ConnAjouteesAHistorique
 
-    -- Cette partie de la requête ne retourne quelque chose qu'à l'installation 
-    -- de ce script ou à sa réinistallation quand AuditReq.dbo.HistoriqueConnexions est vide
-    select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name
-    From 
-      -- première expression ne retourne rien si table a du contenu
-      (select Dummy=1 Where Not Exists (Select * From AuditReq.dbo.HistoriqueConnexions)) As Dummy
-      -- rien + cross join = cancel de la suite
-      CROSS JOIN
-      (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
-      JOIN 
-      sys.dm_exec_connections as C
-      ON C.session_id = S.session_id
-
-    UNION  -- provoque effet de distinct 
-
-    select LoginName, Session_id, LoginTime, client_net_address, program_name
-    From 
-      AuditReq.dbo.connexionsRecentes
-    -- si on vient d'installer ce script (donc que AuditReq.dbo.HistoriqueConnexions est vide)
-    -- fusionner les connexions récentes et celles déjà actives et les y ajouter.
-    -- La clause UNION empêche que la connexion existante qui vient de s'ouvrir soit déboublée
-    -- avec celles de master.sys.dm_exec_sessions
-  
-    -- ôte specifiquement ce qui a été inséré à partir de dbo.connexionsRecentes
-    Delete C
-    From 
-      #ConnAjouteesAHistorique CT
-      INNER LOOP JOIN
-      dbo.connexionsRecentes as C
-      ON  C.Session_id = CT.Session_id 
-      And C.LoginName = CT.LoginName 
-      And C.LoginTime = CT.LoginTime
-
-    -- ôte copie de ce qui a été inséré par inserted
-    Truncate table #ConnAjouteesAHistorique
-
-    -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
-    -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
-    Insert into Dbo.PipelineDeTraitementFinalDAudit
-      ( server_principal_name, session_id, event_time, Database_Name
-      --, sql_batch
-      --, line_number
-      , statement, file_name, file_Offset, passe, file_seq)
-    Select
-      ev.server_principal_name
-    , ev.session_id
-    , ev.event_time
-    , ev.database_name
-    --, sql_batch.sql_batch
-    --, ev.line_number
-    , ev.statement 
-    , Ev.file_name
+    -- c'est comme plus performant de faire ainsi en 2 step que direct 
+    Truncate table #tmp
+    Insert into #tmp
+    Select 
+      ev.file_name
     , ev.file_Offset
     , StartP.passe
     , StartP.file_seq
+    , Event_name
+    , ev.event_data
     From 
       ( -- la fonction sys.fn_xe_file_target_read_file a besoin du dernier fichier lu et l'offset lu
         -- Elle se rend à ce fichier sans parcourir les autres puis se positionne après l'offset lu
@@ -590,29 +562,80 @@ Begin
       CROSS JOIN Dbo.EnumsEtOpt as E
       CROSS APPLY
       (
-      SELECT 
-        F.file_Name
-      , F.file_Offset 
-      , event_time = xEvents.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
-      , server_principal_name = xEvents.event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
-      , session_id = xEvents.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
-      , database_name = xEvents.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
-      --, line_number = xEvents.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
-      , statement = xEvents.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
-      , event_data = xEvents.event_data
-      FROM sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
-      CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
+      Select event_data = xEvents.event_data, Event_name, F.file_name, F.file_offset
+      FROM 
+        sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
+        CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
+        CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
       ) as ev
+    --select * from #tmp
+    -- enlever de #tmp les evenements de login pour des fins de traitement
+    
+    Truncate Table #AuditLogins
+    Delete #tmp
+    OUTPUT deleted.event_data INTO #AuditLogins(event_Data)
+    Where event_name = 'user_event'
+
+    --Select * from #AuditLogins
+    --Select * from #tmp
+    -- inserer les évènements de login à la table d'historique des logins
+    -- le trigger en a de besoin pour lier le client_net_address et le client_app_name à l'instruction SQL
+    Insert Into dbo.HistoriqueConnexions
+          (LoginName,   Session_id,   LoginTime,   client_net_address,   client_app_name,   Event_Sequence)
+    Select J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, Event_Sequence
+    From 
+      (SELECT event_data From #AuditLogins) as event_data
+      CROSS APPLY (SELECT Event_Sequence=event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
+      CROSS APPLY (SELECT UserDataHexString=event_data.value('(event/data[@name="user_data"]/value)[1]', 'nvarchar(max)')) AS UserDataHexString
+      CROSS APPLY (SELECT UserDataBin = CONVERT(VARBINARY(MAX), '0x'+UserDataHexString, 1)) as UserDataBin
+      CROSS APPLY (Select UserData=CAST(UserDataBin as NVARCHAR(4000))) as UserData
+      Outer APPLY
+      (
+      SELECT 
+        LoginName=JSON_VALUE(value, '$.LoginName') 
+      , LoginTime=JSON_VALUE(value, '$.LoginTime')
+      , Session_id=JSON_VALUE(value, '$.spid')
+      , client_net_address=JSON_VALUE(value, '$.client_net_address')
+      , client_app_name=JSON_VALUE(value, '$.client_app_name') 
+      FROM OPENJSON(UserData)
+      -- validation for JSON
+      Where UserData like '_{"LoginName":"%","LoginTime":"%","spid":%,"client_net_address":"%","client_app_name":"%"}_' 
+      ) as J
+
+    -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
+    -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
+    Insert into Dbo.PipelineDeTraitementFinalDAudit
+      ( server_principal_name, session_id, event_time, Event_Sequence, Database_Name
+      --, sql_batch
+      --, line_number
+      , statement, file_name, file_Offset, passe, file_seq)
+    SELECT R.*
+    From
+      (
+      Select 
+        server_principal_name = event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
+      , session_id = event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
+      , event_time = event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
+      , Event_Sequence = event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')
+      , database_name = event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
+      --, line_number = xEvents.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
+      , statement = event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
+      , file_name
+      , file_Offset
+      , passe
+      , file_seq
+      From #tmp    
+      ) as R
     Where session_id>50
-      -- si on traitait toute les requêtes on pourrait mettre le code du module SQL dans SQL+Batch seulement
-      -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
-      -- actuellement on ne le fait pas, et statement est tout le module au démarrage de ce dernier.
-      --OUTER APPLY 
-      --(
-      --Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
-      --Where line_number = 1
-      --) as Sql_Batch
     Set @eventsDone = @@ROWCOUNT 
+    -- si on traitait toute les requêtes on pourrait mettre le code du module SQL dans SQL+Batch seulement
+    -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
+    -- actuellement on ne le fait pas, et statement est tout le module au démarrage de ce dernier.
+    --OUTER APPLY 
+    --(
+    --Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
+    --Where line_number = 1
+    --) as Sql_Batch
 
     -- vérifier si j'ai un fichier à traiter que je ne retrouve plus sur disque pcq un évènement
     -- l'aurait détruit.
@@ -722,19 +745,19 @@ Begin
 
     -- ralentir plus ou moins la fréquence du traitement dépendant du nombre d'évènements qu'on 
     -- a trouvées comme restant à traiter.
-    If @eventsDone=0 Or Not Exists (Select * From Dbo.EvenementsTraites Where NbTotalFich > 1)
+    If @eventsDone<500 
       Waitfor Delay '00:00:05' 
     
     -- On ne veut pas que la table des connexions récentes à l'historique grossise toujours.
     -- Donc detruire les connexions de l'historique qui n'ont plus de session_id existant 
     -- et qui ont une connexion plus récente
-    -- un session_id peut cesser d'exister, et ses transactions ne sont pas toutes traitées
+    -- un session_id peut cesser d'exister, sans que ses transactions soient toutes traitées
     -- mais en pratique on en aura quelques unes
     Delete RC 
     From 
       (
       Select LoginName, session_id, LoginTime, connectSeq=ROW_NUMBER() Over (partition by LoginName order by LoginTime Desc)
-      From dbo.connexionsRecentes as RC
+      From dbo.HistoriqueConnexions as RC
       ) as Rc
     Where connectSeq > 1 -- connexion passée, parce que connects=1 
       And Not Exists -- si une session d'un LoginName semble être du passé, on patiente 1 heure pour être sûr qu'elle a été traitée
@@ -757,10 +780,8 @@ Begin
     Insert into dbo.LogTraitementAudit (Msg) values (@msg)
     RAISERROR(@msg,11,1)
   End Catch
-End
+End -- dbo.CompleterInfoAudit
 go
-USE [msdb]
-GO
 Create or Alter Function dbo.HostMostUsedByLoginName(@LoginName sysname = 'Pelletierr')
 Returns Table
 as
@@ -771,24 +792,26 @@ From
   Select 
     LoginName
   , client_net_address
-  , nbOccclient_net_address
-  , plusFrequent=MAX(nbOccclient_net_address) Over (Partition by LoginName)
+  , nbOcc_Client_net_address
+  , plusFrequent=MAX(nbOcc_Client_net_address) Over (Partition by LoginName)
   From
     ( -- ajouter 
-    Select LoginName, client_net_address, nbOccclient_net_address=count(*) Over (Partition by LoginName, client_net_address)
+    Select LoginName, client_net_address, nbOcc_Client_net_address=count(*) Over (Partition by LoginName, client_net_address)
     From
       (Select PrmUtil=@LoginName) as P
       CROSS APPLY 
       (
       Select Top 10 LoginName, client_net_address, LoginTime
-      FROM AuditReq.dbo.connexionsRecentes 
+      FROM AuditReq.dbo.HistoriqueConnexions
       Where LoginName=P.PrmUtil
       Order By LoginName, LoginTime Desc
       ) As DixDerniersPostesParLoginName
     ) as DecompteOrdis
   ) as LigneFreq
-Where nbOccclient_net_address=plusFrequent
+Where nbOcc_Client_net_address=plusFrequent
 go
+USE [msdb]
+GO
 /****** Object:  Job AuditReq    Script Date: 2024-06-29 09:23:36 ******/
 Begin Try 
 
@@ -829,7 +852,7 @@ Begin Try
   EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Run', 
 		  @step_id=1, 
 		  @cmdexec_success_code=0, 
-		  @on_success_action=1, 
+		  @on_success_action=2, -- si la job arrête, c'est un erreur à rapporter, elle ne devrait pas
 		  @on_success_step_id=0, 
 		  @on_fail_action=2, 
 		  @on_fail_step_id=0, 
@@ -915,6 +938,7 @@ From
   ) as eq
 ORDER BY EventClass, SQLTraceColumn
 go
+--Select * From dbo.EquivExEventsVsTrace where EventClass like 'UserCon%'--
 
 --Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
@@ -973,7 +997,7 @@ Select top 3
   ev.server_principal_name
 , ev.session_id
 , ev.event_time
-, Hc.program_name
+, Hc.client_app_name
 , Hc.Client_net_address
 , ev.database_name
 , ev.statement 
@@ -1008,7 +1032,7 @@ From
   ) as ev
   OUTER APPLY 
   (
-  Select TOP 1 Hc.Program_name, Hc.Client_net_address 
+  Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
   From Auditreq.dbo.connexionsRecentes as Hc
   Where Hc.LoginName = ev.server_principal_name 
     And Hc.session_id = ev.session_id
