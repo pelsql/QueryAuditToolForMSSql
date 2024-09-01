@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.0
+Version 2.1
 
 Cet outil, déployable en un **[seul script SQL disponible ici](https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql)**, réunit plusiers automatismes SQL à des fins d'audit de requêtes.
 
@@ -19,4 +19,13 @@ Planification d'avancements supplémentaires:
 - Tracer aussi les requêtes individuelles des modules SQL
 - Ajouter mécanisme de pré-configuration pour rapport d'erreur par courriel (usager choisi son serveur de courriel, ses destinataires)
 
+#Historique des versions
+
+Version 1.0 : En gros le Readme...
+
+Version 2.0
+- Éliminer le besoin d'insérer dans une table dans le déclencheur de Login (élimine possibilité d'erreur qui bloque un login). À la place on utilise un évènement utilisateur qui contient l'information qu'on veut passer au traitement des évènements. Le traitement de évènements ajoute aussi un numéro de séquence qui assure que les requêtes sont bien liés aux évènements de login correspondants.
+
+Version  2.1
+- Ajoute un peu plus de résilience (on veut tout tracer n'est-ce pas). Si le processus est interrompu, on ne veut pas qu'ils soit "cassé" et perde des évènements. On fonctionne par retraitement des évènenements en éliminant ce qui pourrait causer problème c'est à dire l'insertion d'évènements en double. On ajoute à la requête le test que l'évènement n'est pas déjà inséré pour l'insérer. L'autre élément de résilience, est l'ajout d'un horaire de auto-restart. Quand l'Agent SQL redémarre il y a un horaire de autoStart, mais si la procédure est interrompue, il y a un horaire supplémentaire qui essaie de la partir au 15 minutes. Elle est sans effet quand cela roule, mais si la procédure est stoppé, ce redémarrage évitera d'accumuler des fichiers d'évènements à côté qui ne sont pas traités. Cas extrêment limites détectés et résolus. Ajout d'outils de test.
 

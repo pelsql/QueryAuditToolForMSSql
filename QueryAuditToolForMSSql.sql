@@ -194,9 +194,10 @@ DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER; --repeated here for c
 GO
 -- initialiser le plus près possible les connexions déjà existantes et laisser 
 -- le trigger permettre l'enregistrement des suivantes
+-- on a des cas ou la jointure vers sys.dm_exec_connections donne plus d'une rangée par session_id d'ou le distinct
 Insert into AuditReq.dbo.HistoriqueConnexions
 (LoginName, Session_id, LoginTime, Client_net_address, client_app_name, event_sequence)
-Select S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name, 0
+Select distinct S.login_name, S.session_id, S.login_time, C.client_net_address, S.program_name, 0
 From 
   (Select * From sys.dm_exec_sessions as S Where S.is_user_process=1) as S
   JOIN 
@@ -373,7 +374,7 @@ CREATE TABLE dbo.AuditComplet
 , passe Int 
 , file_seq Int
 ) 
-create index iEvent_Time on dbo.AuditComplet(Event_time)
+create index iEvent_Time on dbo.AuditComplet(Event_time, event_Sequence)
 go
 Drop table if Exists dbo.LogTraitementAudit
 CREATE TABLE dbo.LogTraitementAudit
@@ -413,10 +414,12 @@ From
 Exec (@Sql)
 GO
 -- --------------------------------------------------------------------------------
--- This trigger is just a mean to implement a processing pipeline or events
--- the table is always left empty
--- It handle inserts and redirect processed output to different tables
--- and ignores Delete, Update
+-- Ce déclencheur ne sert que de moyen d'implanter un pipeline de traitement 
+-- d'évènemets. En tant qu'instead trigger, il fait jamais d'opération réelle sur
+-- sa table qui reste vide.
+-- Il finalise l'ajout de l'information de connexion à l'audit et
+-- et fait le suivi des fichiers lus et des prochains fichiers à lire
+-- en tenant compte de leur offset (où ils en sont rendus)
 -- --------------------------------------------------------------------------------
 Create or Alter Trigger trgPipelineDeTraitementFinalDAudit 
 ON dbo.PipelineDeTraitementFinalDAudit
@@ -432,39 +435,50 @@ Begin
 
   Begin Try
 
-  Insert into dbo.AuditComplet 
-    ( server_principal_name, event_time, Client_net_address, event_sequence
-    , session_id, client_app_name, database_name
-    --, sql_batch
-    --, line_number
-    , statement, passe, file_seq)
-  Select 
-    I.server_principal_name, I.event_time, Hc.Client_net_address, I.event_Sequence
-  , I.session_id, Hc.client_app_name, I.database_name
-  --, I.sql_batch
-  --, I.Line_number
-  , I.statement, I.passe, I.file_seq
-  From 
-    Inserted as I
-    -- Un même login peut se connecter et se reconnecter avec un numéro de session différent
-    -- mais ce qu'on cherche c'est le login avec le même session_id
-    -- mais qui a la sequence la plus proche dans les évènements de requête
-    -- exemple le login de session_id=120 avec event_Sequence=130
-    -- il y a des requêtes pour cette session_id=120 avec event_sequence > 130 et < 400
-    -- cette session se termine puis une autre s'ouvre qui réutilise le même session_id 
-    -- exemple le login de session_id=120 avec event_Sequence=401
-    -- il y a  des requêtes pour ce session_id=120 avec  event_sequence > 401
-    -- donc si on veut associer les requêtes au bon login, il faut qu'il y ait égalité sur le session_id
-    -- et trouver celui dont le event_sequence est plus petit que la requête
+    Insert into dbo.AuditComplet 
+      ( server_principal_name, event_time, Client_net_address, event_sequence
+      , session_id, client_app_name, database_name
+      --, sql_batch
+      --, line_number
+      , statement, passe, file_seq)
+    Select 
+      I.server_principal_name, I.event_time, Hc.Client_net_address, I.event_Sequence
+    , I.session_id, Hc.client_app_name, I.database_name
+    --, I.sql_batch
+    --, I.Line_number
+    , I.statement, I.passe, I.file_seq
+    From 
+      Inserted as I
+      -- Un même login peut se connecter et se reconnecter avec un numéro de session différent
+      -- mais ce qu'on cherche c'est le login avec le même session_id
+      -- mais qui a la sequence la plus proche dans les évènements de requête
+      -- exemple le login de session_id=120 avec event_Sequence=130
+      -- il y a des requêtes pour cette session_id=120 avec event_sequence > 130 et < 400
+      -- cette session se termine puis une autre s'ouvre qui réutilise le même session_id 
+      -- exemple le login de session_id=120 avec event_Sequence=401
+      -- il y a  des requêtes pour ce session_id=120 avec  event_sequence > 401
+      -- donc si on veut associer les requêtes au bon login, il faut qu'il y ait égalité sur le session_id
+      -- et trouver celui dont le event_sequence est plus petit que la requête
 
-    OUTER APPLY 
-    (
-    Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
-    From Auditreq.dbo.HistoriqueConnexions as Hc
-    Where Hc.session_id = I.session_id
-      And Hc.event_Sequence < I.event_Sequence 
-    Order by Session_id, event_Sequence desc
-    ) Hc
+      OUTER APPLY 
+      (
+      Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
+      From Auditreq.dbo.HistoriqueConnexions as Hc
+      Where Hc.session_id = I.session_id
+        And Hc.event_Sequence < I.event_Sequence 
+      Order by Session_id, event_Sequence desc
+      ) Hc
+       -- en dehors du trigger il y a une gestion des fichiers d'évènements traités
+       -- s'il en sont pas traités comme supprimés, il y aura risque de relecture
+       -- des évènements et ce Where Not Exists évite les duplications.
+    Where
+      Not Exists
+      (
+      Select * 
+      From dbo.AuditComplet AC
+      Where AC.event_time = I.event_time 
+        And AC.event_sequence = I.event_Sequence
+      )
 
     Delete From dbo.AuditComplet 
     Where event_time < DATEADD(dd, -45, getdate()) -- détruit audit plus vieux que 45 jours.
@@ -481,17 +495,21 @@ Begin
     Insert into dbo.EvenementsTraites (passe, file_Seq, file_name, last_Offset_done, NbTotalFich)
     Select 
       @passe
-    , fileSeq=ROW_NUMBER() Over (Order by file_Name)
+      -- le nom des fichiers "croît" dans le temps, fileSeq permet de voir si on a lu
+      -- plus d'un fichier dans une passe.
+    , fileSeq=ROW_NUMBER() Over (Order by file_Name) 
     , file_name
     , last_offset_done
-    , NbTotalFich=COUNT(*) Over (Partition By NULL)
+    , NbTotalFich=COUNT(*) Over (Partition By NULL) -- nombre de fichiers lus
     From
       (
-      Select file_name, last_offset_done=MAX(file_offset)
+      -- offset le plus lointain lu pour un fichier, on repartira de là pour lire la suite
+      Select file_name, last_offset_done=MAX(file_offset) 
       From Inserted
       Group by file_name 
       ) as files
 
+    -- pour ce qui a été déjà traité
     Insert into dbo.EvenementsTraitesSuivi (passe, file_Seq, file_name, last_Offset_done, NbTotalFich) 
     Select @passe, file_Seq, file_name, last_Offset_done, NbTotalFich from dbo.EvenementsTraites as Et
 
@@ -554,9 +572,12 @@ Begin
         -- Elle se rend à ce fichier sans parcourir les autres puis se positionne après l'offset lu
         -- pour y poursuivre la suite de la lecture des évènements.
 
-      Select file_name, last_Offset_done, passe, file_seq From dbo.EvenementsTraites Where file_seq = NbTotalFich
+      Select file_name, last_Offset_done, passe, file_seq -- dernier offset lu du dernier fichier, voir trigger
+      From dbo.EvenementsTraites 
+      Where file_seq = NbTotalFich -- dernier fichier lu la dernière fois.
       UNION ALL
-      -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ, après ça ne devrait plus arriver
+      -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ, 
+      -- donc en pratique cette requête ne s'exécute plus par la suite
       Select NULL, NULL, NULL, NULL Where Not Exists (Select * From dbo.EvenementsTraites)
       ) as StartP
       CROSS JOIN Dbo.EnumsEtOpt as E
@@ -580,9 +601,10 @@ Begin
     --Select * from #tmp
     -- inserer les évènements de login à la table d'historique des logins
     -- le trigger en a de besoin pour lier le client_net_address et le client_app_name à l'instruction SQL
+    -- on a des cas ou la jointure vers sys.dm_exec_connections donne plus d'une rangée par session_id d'ou le distinct
     Insert Into dbo.HistoriqueConnexions
           (LoginName,   Session_id,   LoginTime,   client_net_address,   client_app_name,   Event_Sequence)
-    Select J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, Event_Sequence
+    Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, Event_Sequence
     From 
       (SELECT event_data From #AuditLogins) as event_data
       CROSS APPLY (SELECT Event_Sequence=event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
@@ -601,9 +623,22 @@ Begin
       -- validation for JSON
       Where UserData like '_{"LoginName":"%","LoginTime":"%","spid":%,"client_net_address":"%","client_app_name":"%"}_' 
       ) as J
+    -- Ajout de résilience. Si le processus de traitement des évènements a été interrompu,
+    -- et qu'on retraite les évènements de login, ce bout de code évite les cas de duplicate.
+    Where
+      Not Exists -- Si le processus a planté, et qu'on traite à nouveau les évènements de login
+                 -- ce bout de code empêchera l'insertion de duplicate
+      (
+      Select * 
+      From dbo.HistoriqueConnexions CE 
+      Where 
+            CE.Session_id = J.Session_id 
+        And CE.event_sequence = Event_Sequence.Event_Sequence
+      )            
 
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
     -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
+    -- la résilience en cas de problème est garantie par le trigger
     Insert into Dbo.PipelineDeTraitementFinalDAudit
       ( server_principal_name, session_id, event_time, Event_Sequence, Database_Name
       --, sql_batch
@@ -638,7 +673,7 @@ Begin
     --) as Sql_Batch
 
     -- vérifier si j'ai un fichier à traiter que je ne retrouve plus sur disque pcq un évènement
-    -- l'aurait détruit.
+    -- manuel ou système l'aurait détruit.
     Insert into dbo.LogTraitementAudit (Msg)
     Select Msg=PrefixMsgFichPerdu+Diff.file_name
     From
@@ -666,9 +701,9 @@ Begin
     While (1=1)
     Begin
       -- obtient prochain fichier relatif au @file_Seq courant, mais exclue les deux derniers
-      -- pourquoi dexu plutôt qu'un seul?
+      -- pourquoi deux plutôt qu'un seul?
       -- il arrive au switch de fichier que le dernier soit écrit et devienne avant dernier
-      -- et n'est pas fini de lire. La fonction de lecture va donc se plaindre qu'il manque
+      -- et n'est pas fini de lire. La fonction de lecture va donc se plaindre qu'il est manquant
       Select Top 1 -- pour stopper la recherche car chaque rangée possède sa séquence unique
         @file_Seq = File_Seq -- ordre des fichiers
       , @aFileToDel = file_Name
@@ -684,13 +719,13 @@ Begin
       If @@ROWCOUNT = 0 -- plus de noms de fichiers à supprimer déduit des dbo.evenementstraités.
       Begin
         -- Menage des fichiers dont les noms ne sont plus retournés par sys.fn_xe_file_target_read_file
-        -- donc pas dans dbo.evenementstraites non plus pour la même raison.
+        -- Ils ne sont pas plus dans dbo.evenementstraites pour la même raison.
         -- C'est possible à cause d'un rollover qui se ferait et qui éliminerait un fichier qu'on a vraiment fini de lire
         -- mais comme on ne sait pas si c'est le cas, l'algorithnme de l'élimine pas. 
         -- Il attend qu'il tombe en second à la prochaine lecture. Mais comme le RollOver supprime le fichier
         -- avant qu'on aille relire, sys.fn_xe_file_target_read_file n'en retourne plus la trace. Ici on fait 
-        -- ménage "lazy" qui n'en fait qu'un à la fois, et ne touche jamais au dernier présent sur disque
-        -- qu'on présume comme appartenant à la trace active.
+        -- ménage "lazy" qui n'en fait qu'un à la fois, et ne touche jamais au dernier (plus récent)
+        -- qui est présent sur disque. On le présume comme appartenant à la trace active.
         Select TOP 1 @aFileToDel = full_filesystem_path
         FROM dbo.EnumsEtOpt cross apply sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
         Where 
@@ -711,6 +746,7 @@ Begin
       -- toutefois même si on a fini de traiter les évènements du fichier, d'autres peuvent s'y ajouter entretemps
       -- et il reste en usage, aussi on accepte l'erreur.
       Begin Try
+        -- truc pour passer de l'information au profiler avec une instruction d'initialisation
         Declare @trc Nvarchar(4000) = 'declare @trcPourProfiler varchar(4000) =''Fichier à ôter :'+ @afileToDel+@progres+''''
         Exec(@trc)
         Exec master.sys.xp_delete_files @afileToDel
@@ -729,7 +765,9 @@ Begin
           ) as Msg
 
         -- élimine des évènements traités seulement celui qu'on vient de faire 
-        -- ne pas oublier qu'il en restera deux qui seront à traiter 
+        -- ne pas oublier qu'il en restera deux qui seront à traiter
+        -- si une panne empêche l'exécution de ce bout, ce qui ferait que les évènements seraient
+        -- reinsérés, le trigger teste que les évènements ne sont pas déjà insérés
         Delete From dbo.EvenementsTraites Where file_seq=@File_Seq And @last_Offset_done IS NOT NULL
       End Try
       Begin Catch 
@@ -824,14 +862,15 @@ Begin Try
 
   If @jobId IS NOT NULL
   Begin
-    If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
-    Begin
-      EXEC sp_detach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
-      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqSchedule'
-      IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
-    End
     EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=N'AuditReq'
     IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+
+    If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
+    Begin
+      EXEC sp_detach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqAutoRestart';
+      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqAutoStart'
+      IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+    End
   End
 
   Set @jobId = NULL
@@ -880,7 +919,7 @@ End catch
   IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_update_Job ',11,1,@returnCode)
 
   EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
-    @schedule_name=N'AuditReqSchedule',
+    @schedule_name=N'AuditReqAutoStart',
 		  @enabled=1, 
 		  @freq_type=64, 
 		  @freq_interval=0, 
@@ -893,9 +932,28 @@ End catch
 		  @active_start_time=0, 
 		  @active_end_time=235959, 
 		  @schedule_uid=N'125473bc-5be4-482d-a983-6429de1eb934'
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule ',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule pour AuditReqAutoStart',11,1,@returnCode)
 
-  EXEC sp_attach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqSchedule';
+  EXEC sp_attach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqAutoStart';
+
+  EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
+  @schedule_name=N'AuditReqAutoRestart', 
+		@enabled=1, 
+		@freq_type=4, 
+		@freq_interval=1, 
+		@freq_subday_type=4, 
+		@freq_subday_interval=15, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20240831, 
+		@active_end_date=99991231, 
+		@active_start_time=0, 
+		@active_end_time=235959, 
+		@schedule_uid=N'0d25ae92-b4d3-4c26-868a-046121824dc8'
+  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule pour AuditReqAutoRestart',11,1,@returnCode)
+
+  EXEC sp_attach_schedule @job_name = N'AuditReq', @schedule_name = N'AuditReqAutoRestart';
+
 
   EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
   IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_jobserver ',11,1,@returnCode)
@@ -910,7 +968,7 @@ Begin catch
   Select @msg = F.ErrMsg
   From 
     AuditReq.dbo.FormatCurrentMsg (NULL) as F
-  Print @msg
+  Print 'erreur à la définition ou au lancement de la job: '+@msg
   ROLLBACK
 End catch
 GO
@@ -937,6 +995,22 @@ From
       LEFT JOIN sys.trace_xe_action_map  am ON tc.trace_column_id = am.trace_column_id
   ) as eq
 ORDER BY EventClass, SQLTraceColumn
+go
+create or alter function dbo.findMissingSeq (@diff int) -- intented to be run with fresh install after a run of LauchSQLStressTest.ps1
+returns table
+as
+return
+select *
+From
+  (
+  select event_sequence, event_time, statement, f, s, bs=isnull(lag(s,1,0) Over (partition by f order by s),'00000')
+  from 
+    dbo.AuditComplet
+    cross apply (Select F=cast(SUBSTRING(statement,12,3) as int)) as f
+    cross apply (select S=cast(SUBSTRING(statement,20,5) as int)) as s
+  where statement like 'SELECT Fen=%,Seq=%' 
+  ) as r
+Where S-bs<>@diff -- should be 1 if no gap or missing 
 go
 --Select * From dbo.EquivExEventsVsTrace where EventClass like 'UserCon%'--
 
