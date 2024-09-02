@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 2.0
+AuditReq Version 2.1  Repository https://github.com/pelsql/QueryAuditToolForMSSql
 -- -----------------------------------------------------------------------------------
 -- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
 -- DANS LA VUE DBO.ENUMSETOPT
