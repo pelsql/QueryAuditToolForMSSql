@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.1 (version française **[LISEZMOI.MD](https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql)**)
+Version 2.1 (version française **[LISEZMOI.MD](https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LISEZMOI.md)**)
 
 ## Why Another Query Audit Tool?
 
