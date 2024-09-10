@@ -1,8 +1,13 @@
 ﻿/*
-AuditReq Version 2.11  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+AuditReq Version 2.12  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
+(To obtain the most recent version go to this link below)
+https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
 -- -----------------------------------------------------------------------------------
 -- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
 -- DANS LA VUE DBO.ENUMSETOPT
+-- BEFORE RUNNING THIS SCRIPT ADJUST FILE NAME AND DIRECTORY OPTIONS 
+-- IN VIEW DBO.ENUMSETOPT
 -- -----------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
@@ -273,6 +278,18 @@ CREATE EVENT SESSION AuditReq ON SERVER
   ADD EVENT sqlserver.user_event
   (
     ACTION (package0.event_sequence)
+  )
+, ADD EVENT sqlserver.rpc_completed
+  (
+    ACTION
+    (    
+      sqlserver.server_principal_name
+    , sqlserver.session_id
+    , sqlserver.database_name
+    , sqlserver.sql_text
+    , package0.event_sequence
+    )
+    WHERE [sqlserver].[is_system]=(0)
   )
 , ADD EVENT sqlserver.sql_statement_completed
   (
@@ -1018,7 +1035,7 @@ go
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 --group by file_name, last_Offset_done
 --order by file_name, last_Offset_done
-Select * From auditReq.dbo.LogTraitementAudit 
+--Select * From auditReq.dbo.LogTraitementAudit 
 /*
 
 Select *--session_id--, sql_batch, statement 

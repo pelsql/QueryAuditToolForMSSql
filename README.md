@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.11 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.12 **[Version Française](#queryaudittoolformssql-français)**
 
 ## Why Another Query Audit Tool?
 
@@ -52,6 +52,7 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 - **Version 2.0:** Eliminated the need to store connection information in a table at the login trigger level, replacing the mechanism with the use of a user event containing the necessary information. Events are now sequenced to associate queries with their session number and event sequence. This method avoids the difficulties of linking by rounded temporal data at the trace file level.
 - **Version 2.1:** Enhanced resilience to prevent event loss in case of interruption. Added a mechanism to prevent duplicate entries and implemented an automatic task restart every 15 minutes in case of stoppage. Support for multiple connections per session. Improved testing tools to simplify the verification of result accuracy, ensuring that no events are missing.
 - **Version 2.11** : Streamlining of a process (minor modification) and adjustments to tests
+- **Version 2.12** : RPC_Completed events added
 
 # QueryAuditToolForMSSQL (Français)
 
@@ -111,3 +112,4 @@ Tests de qualité réussis:
 - **Version 2.0** : Élimination du besoin de mémoriser dans une table, au niveau du déclencheur de Login, les informations de connexions. Remplacement du mécanisme par l'utilisation d'un événement utilisateur contenant les informations nécessaires. Les événements sont dorénavant séquencés pour associer les requêtes à leur numéro de session et séquence d'événement. C'est une méthode qui n'est pas sujette aux difficultés de faire des liens par des données temporelles arrondies au niveau du fichier trace.
 - **Version 2.1** : Renforcement de la résilience pour éviter la perte d'événements en cas d'interruption. Ajout d'un mécanisme empêchant l'insertion de doublons et mise en place d'un redémarrage automatique de la tâche toutes les 15 minutes en cas d'arrêt. Prise en charge des connexions multiples par session. Amélioration des outils de test pour simplifier la vérification de l'exactitude des résultats, garantissant notamment l'absence d'événements manquants.
 - **Version 2.11** : Allègement d'un traitement (modification mineure) et ajustements aux tests
+- **Version 2.12** : Ajout des évènements RPC_Completed
