@@ -14,6 +14,7 @@ New-Item -Path $filePath -ItemType File
 # Loop to start n PowerShell windows, each running the same script
 for ($i = 1; $i -le $n; $i++) {
     Start-Process powershell  -WindowStyle Minimized -ArgumentList "-NoExit", "-File", $scriptPath, "-fenetre $i" 
+    #Start-Process powershell  -ArgumentList "-NoExit", "-File", $scriptPath, "-fenetre $i" 
     Write-Host "Started PowerShell window $i running $scriptPath" "-fenetre $i"
 }
 

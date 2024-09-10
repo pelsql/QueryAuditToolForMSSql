@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 2.1  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+AuditReq Version 2.11  Repository https://github.com/pelsql/QueryAuditToolForMSSql
 -- -----------------------------------------------------------------------------------
 -- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
 -- DANS LA VUE DBO.ENUMSETOPT
@@ -548,10 +548,9 @@ Begin
   , passe int NULL
   , file_seq int null
   , event_name nvarchar(128)
+  , Event_Sequence BigInt
   , event_data XML NULL
   )
-  Drop table if Exists #AuditLogins
-  Create Table #AuditLogins (event_Data XML NULL)
 
   Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
@@ -566,6 +565,7 @@ Begin
     , StartP.passe
     , StartP.file_seq
     , Event_name
+    , Event_Sequence 
     , ev.event_data
     From 
       ( -- la fonction sys.fn_xe_file_target_read_file a besoin du dernier fichier lu et l'offset lu
@@ -583,21 +583,17 @@ Begin
       CROSS JOIN Dbo.EnumsEtOpt as E
       CROSS APPLY
       (
-      Select event_data = xEvents.event_data, Event_name, F.file_name, F.file_offset
+      Select event_data = xEvents.event_data, Event_name, Event_Sequence, F.file_name, F.file_offset
       FROM 
         sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
         CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
         CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
+        CROSS APPLY (Select Event_Sequence = xEvents.event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
       ) as ev
-    --select * from #tmp
+    --select * from #tmp Where event_name = 'user_event'
+    --select * from #tmp Where event_name <> 'user_event'
     -- enlever de #tmp les evenements de login pour des fins de traitement
     
-    Truncate Table #AuditLogins
-    Delete #tmp
-    OUTPUT deleted.event_data INTO #AuditLogins(event_Data)
-    Where event_name = 'user_event'
-
-    --Select * from #AuditLogins
     --Select * from #tmp
     -- inserer les évènements de login à la table d'historique des logins
     -- le trigger en a de besoin pour lier le client_net_address et le client_app_name à l'instruction SQL
@@ -606,8 +602,7 @@ Begin
           (LoginName,   Session_id,   LoginTime,   client_net_address,   client_app_name,   Event_Sequence)
     Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, Event_Sequence
     From 
-      (SELECT event_data From #AuditLogins) as event_data
-      CROSS APPLY (SELECT Event_Sequence=event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
+      (SELECT event_data, Event_Sequence From #tmp Where event_name = 'user_event') as Tmp
       CROSS APPLY (SELECT UserDataHexString=event_data.value('(event/data[@name="user_data"]/value)[1]', 'nvarchar(max)')) AS UserDataHexString
       CROSS APPLY (SELECT UserDataBin = CONVERT(VARBINARY(MAX), '0x'+UserDataHexString, 1)) as UserDataBin
       CROSS APPLY (Select UserData=CAST(UserDataBin as NVARCHAR(4000))) as UserData
@@ -633,7 +628,7 @@ Begin
       From dbo.HistoriqueConnexions CE 
       Where 
             CE.Session_id = J.Session_id 
-        And CE.event_sequence = Event_Sequence.Event_Sequence
+        And CE.event_sequence = Tmp.Event_Sequence
       )            
 
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
@@ -648,18 +643,18 @@ Begin
     From
       (
       Select 
-        server_principal_name = event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
-      , session_id = event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
-      , event_time = event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
-      , Event_Sequence = event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')
-      , database_name = event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
-      --, line_number = xEvents.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
-      , statement = event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
-      , file_name
-      , file_Offset
-      , passe
-      , file_seq
-      From #tmp    
+        server_principal_name = Tmp.event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
+      , session_id = Tmp.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
+      , event_time = Tmp.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
+      , Tmp.Event_Sequence
+      , database_name = Tmp.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
+      --, line_number = Tmp.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
+      , statement = Tmp.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
+      , Tmp.file_name
+      , Tmp.file_Offset
+      , Tmp.passe
+      , Tmp.file_seq
+      From (SELECT * From #tmp Where event_name <> 'user_event') Tmp
       ) as R
     Where session_id>50
     Set @eventsDone = @@ROWCOUNT 
@@ -974,6 +969,7 @@ End catch
 GO
 Use AuditReq
 go
+-- help find mappings of extended events to old Sql trace
 Create or alter view dbo.EquivExEventsVsTrace
 as
 Select top 99.9999 PERCENT *
@@ -1012,13 +1008,17 @@ From
   ) as r
 Where S-bs<>@diff -- should be 1 if no gap or missing 
 go
+-- Select * from dbo.findMissingSeq (1)--should return nothing for a valid test
+-- Select * from dbo.findMissingSeq (0) order by f,s--should return all rows of the test for a valid test
+-- select * from AuditComplet
+-- select * From dbo.HistoriqueConnexions 
 --Select * From dbo.EquivExEventsVsTrace where EventClass like 'UserCon%'--
 
 --Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
 --From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 --group by file_name, last_Offset_done
 --order by file_name, last_Offset_done
-
+Select * From auditReq.dbo.LogTraitementAudit 
 /*
 
 Select *--session_id--, sql_batch, statement 
@@ -1033,7 +1033,7 @@ Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock)
 order by dateSuivi
 Select file_name, last From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
 group by dateSuivi
-Select * From auditReq.dbo.LogTraitementAudit 
+
 where msg like '%D:\_Tmp\AuditReq\AuditReq_0_133635856879820000.Xel%'
 with (nolock) order by msgDate
 Select * From auditReq.dbo.LogTraitementAudit 
