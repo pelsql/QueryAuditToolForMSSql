@@ -5,7 +5,7 @@ Set-Location D:\_SQL\QueryAuditToolForMSSql
 $scriptPath = "D:\_SQL\QueryAuditToolForMSSql\ASingleTest.ps1"
 
 # Define the number of windows you want to open
-$n = 20
+$n = 10
 
 
 $filePath = "D:\_SQL\QueryAuditToolForMSSql\stopwatch.txt"

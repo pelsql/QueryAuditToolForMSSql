@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.12 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.50 **[Version Française](#queryaudittoolformssql-français)**
 
 ## Why Another Query Audit Tool?
 
@@ -53,10 +53,11 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 - **Version 2.1:** Enhanced resilience to prevent event loss in case of interruption. Added a mechanism to prevent duplicate entries and implemented an automatic task restart every 15 minutes in case of stoppage. Support for multiple connections per session. Improved testing tools to simplify the verification of result accuracy, ensuring that no events are missing.
 - **Version 2.11** : Streamlining of a process (minor modification) and adjustments to tests
 - **Version 2.12** : RPC_Completed events added
+- **Version 2.50** : Many fixes to problems found under heavy load, and other resiliency features
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.1
+Version 2.50
 
 ## Pourquoi un autre outil d'Audit de requête?
 
@@ -113,3 +114,4 @@ Tests de qualité réussis:
 - **Version 2.1** : Renforcement de la résilience pour éviter la perte d'événements en cas d'interruption. Ajout d'un mécanisme empêchant l'insertion de doublons et mise en place d'un redémarrage automatique de la tâche toutes les 15 minutes en cas d'arrêt. Prise en charge des connexions multiples par session. Amélioration des outils de test pour simplifier la vérification de l'exactitude des résultats, garantissant notamment l'absence d'événements manquants.
 - **Version 2.11** : Allègement d'un traitement (modification mineure) et ajustements aux tests
 - **Version 2.12** : Ajout des évènements RPC_Completed
+- **Version 2.50** : Nombreuses corrections aux problèmes rencontrés sous forte charge, ainsi que d'autres fonctionnalités de résilience.

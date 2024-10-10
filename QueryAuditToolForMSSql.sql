@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 2.12  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+AuditReq Version 2.50  Repository https://github.com/pelsql/QueryAuditToolForMSSql
 Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
 (To obtain the most recent version go to this link below)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
@@ -98,6 +98,7 @@ From
   CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
   CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
   CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+BaseFn) as TargetFnCreateEvent
+  CROSS APPLY (Select EspaceDisqPourTrace=100000) as EspaceDisquePourTrace
 -- select * from Dbo.EnumsEtOpt
 GO
 If Not Exists
@@ -266,8 +267,6 @@ Begin
   Exec master.sys.xp_delete_files @fn
 End
 go
-declare @FullFn sysname; -- création event Session
-Select @FullFn=E.TargetFnCreateEvent From AuditReq.Dbo.EnumsEtOpt as e;
 -- sp_statement_completed (statement = chaque requete, sql_text le call)
 -- sql_stmt_completed (statement = chaque requete, sql_text le lot)
 -- pour sql_stmt_completed on peut donc alléger le traitement en omettant sql_text
@@ -305,10 +304,11 @@ CREATE EVENT SESSION AuditReq ON SERVER
   )
 ADD TARGET package0.asynchronous_file_target(
 SET 
-  filename = ''#FullFn#''
-, max_file_size = (40) -- fichier 40 meg file par défaut MB est le default
--- pas de rollover puisque la procédure gère elle-même quand ôter les évènements quand elle les a traité
-, max_rollover_files = (1000) -- environ 40 gb
+  filename = ''#TargetFnCreateEvent#''
+, max_file_size = (40) -- fichier n meg (MB unité par défaut)
+-- essayer de repousser au maximum le rollover 
+-- puisque la procédure gère elle-même quand ôter les évènements quand elle les a traité
+, max_rollover_files = (#MaxFichier#) -- ajusté en fonction du parametre EspaceDisqPourTrace
 )
 WITH 
   (
@@ -321,7 +321,11 @@ WITH
   , STARTUP_STATE=ON -- I want the audit live by itself even after server restarts
   );
 '
-Set @Sql=replace(@Sql, '#FullFn#', @FullFn)
+Select @Sql=Sql
+From
+  (Select  MaxFichier=cast(EspaceDisqPourTrace/40 as Nvarchar), TargetFnCreateEvent From dbo.EnumsEtOpt) as  Prm
+  CROSS APPLY (Select Sql0=replace(@Sql, '#TargetFnCreateEvent#', Prm.TargetFnCreateEvent)) as Sql0
+  CROSS APPLY (Select Sql=replace(Sql0, '#MaxFichier#', Prm.MaxFichier)) as Sql
 Print @sql
 Exec (@Sql);
 go
@@ -448,6 +452,13 @@ Begin
   -- remember this table is always empty. It is just a pipeline
   -- In care there us non-sense attempts of deletes or update (since table is empty)
   -- there is nothing to do, since in both case inserted table is going to be empty.
+  Set nocount on
+
+  declare @DebutPourProfiler nvarchar(max)
+  Select @DebutPourProfiler  = 'Declare @x sysname; set @x='''+file_name+' '+str(file_offset)+''''
+  From (Select top 1 file_name, file_offset from Inserted order by file_name desc, file_offset desc) as x
+  Exec (@DebutPourProfiler )
+
   Declare @msg nvarchar(4000)
 
   Begin Try
@@ -460,7 +471,7 @@ Begin
       , statement, passe, file_seq)
     Select 
       I.server_principal_name, I.event_time, Hc.Client_net_address, I.event_Sequence
-    , I.session_id, Hc.client_app_name, I.database_name
+    , I.session_id, Hc.client_app_name, ISNULL(I.database_name, 'nom de base de données absent')
     --, I.sql_batch
     --, I.Line_number
     , I.statement, I.passe, I.file_seq
@@ -542,7 +553,6 @@ Begin
     From 
       (Select ErrMsgTemplate From dbo.EnumsEtOpt) as E
       CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
-    Insert Into dbo.LogTraitementAudit(Msg) Values (@msg)
     RAISERROR(@msg,11,1)
   End Catch
 
@@ -550,12 +560,46 @@ End
 GO
 USE AuditReq
 GO
+Create Or Alter Function dbo.FileInfo (@fullPathAndName sysname)
+Returns Table
+as
+Return
+  Select *
+  From
+    (Select fullPathAndName=@fullPathAndName) as FullPathAndName
+    CROSS APPLY (Select posBS=len(fullPathAndName)-CHARINDEX('\', Reverse(fullPathAndName))+1) as PosBS
+    CROSS APPLY (Select FileNamePlain=STUFF(fullPathAndName, 1, posBs, '')) as FileNamePlain
+    CROSS APPLY (Select Directory=Substring(fullPathAndName, 1, posBs)) as Directory
+    OUTER APPLY (Select * From sys.dm_os_enumerate_filesystem(Directory, FileNamePlain)) as Info
+    OUTER APPLY (Select Existing=1 Where Info.full_filesystem_path IS NOT NULL) as Existing
+-- Select * From dbo.FileInfo ('D:\_Tmp\AuditReq\AuditReq_0_133728749432040000.Xel')
+GO
+Create Or Alter Function dbo.FichierALiberer ()
+Returns Table
+as
+Return
+  Select full_filesystem_path, Ordre, nbfich 
+  From
+    (
+    Select 
+      Dir.full_filesystem_path
+    , ordre=row_number() Over (order by Dir.full_filesystem_path)
+    , nbFich=count(*) Over (Partition By NULL)
+    FROM 
+      dbo.EnumsEtOpt as Opt
+      CROSS APPLY sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, MatchFichTrc) as Dir -- attention recursion possible!
+    Where 
+      Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+    ) as FichierEnOrdre
+  Where Ordre=1 And nbFich>1 -- ne pas essayer de le détruire le dernier qui peut être live ou réactivé
+GO
 Create or Alter Proc dbo.CompleterInfoAudit
 as
 Begin
   Set nocount on
 
   Begin Try
+  Delete from dbo.EvenementsTraites -- on ne présume pas que l'on doit reprendre d'une exécution passée mais des fichiers sur disque
 
   Drop table if Exists #tmp
   Create table #tmp 
@@ -569,7 +613,6 @@ Begin
   , event_data XML NULL
   )
 
-  Declare @eventsDone BigInt
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
   Begin
 
@@ -585,36 +628,93 @@ Begin
     , Event_Sequence 
     , ev.event_data
     From 
-      ( -- la fonction sys.fn_xe_file_target_read_file a besoin du dernier fichier lu et l'offset lu
-        -- Elle se rend à ce fichier sans parcourir les autres puis se positionne après l'offset lu
-        -- pour y poursuivre la suite de la lecture des évènements.
-
-      Select file_name, last_Offset_done, passe, file_seq -- dernier offset lu du dernier fichier, voir trigger
-      From dbo.EvenementsTraites 
-      Where file_seq = NbTotalFich -- dernier fichier lu la dernière fois.
-      UNION ALL
-      -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ, 
-      -- donc en pratique cette requête ne s'exécute plus par la suite
-      Select NULL, NULL, NULL, NULL Where Not Exists (Select * From dbo.EvenementsTraites)
-      ) as StartP
-      CROSS JOIN Dbo.EnumsEtOpt as E
+      (Select * From EnumsEtOpt) AS opt
+      OUTER APPLY
+      (
+      -- on est chanceux que sys.fn_xe_file_target_read_file donne les évènements en ordre avec les Offset
+      Select Top 1 E.file_name, DernierOffsetConfirme=E.last_Offset_done, E.Passe, E.file_seq
+      From 
+        dbo.EvenementsTraites As E
+        CROSS APPLY (Select * From dbo.FileInfo(E.file_name) Where Existing=1) as Existing -- file must exists
+        cross apply sys.fn_xe_file_target_read_file(E.file_name, NULL, E.file_name, E.last_Offset_done) as F -- otherwise the is an error here
+      Where E.file_seq = E.NbTotalFich -- dernier fichier lu la dernière fois.
+      ) as Poursuivre
       CROSS APPLY
+      ( -- La fonction sys.fn_xe_file_target_read_file a besoin du dernier fichier lu et le dernier offset lu.
+        -- Elle se rend à ce fichier sans parcourir les autres puis se positionne APRES l'offset lu
+        -- pour y poursuivre la suite de la lecture des évènements.
+        -- On a vérifié au préalable que l'offset suivant lu existe.
+        -- Cela permet de choisir entre poursuivre la lecture du fichier ou lire le prochain fichier
+        -- L'UNION ALL retourne les paramètres appropriés fn_xe_file_target_read_file
+        -- chaque requête de l'UNION étant dédiée au deux situations (continuer à lire ou fichier suivant)
+
+      Select 
+        Poursuivre.file_name
+      , FilenamePourOffset=Poursuivre.file_name 
+      , Poursuivre.DernierOffsetConfirme -- NULL fera la job
+      , Poursuivre.passe
+      , Poursuivre.file_seq -- dernier offset lu du dernier fichier, voir trigger
+      Where Poursuivre.file_name is NOT NULL
+
+      UNION ALL 
+      Select Suivant.file_name, FilenamePourOffset=NULL, DernierOffsetConfirme=NULL, NULL, NULL
+      From
+        (
+        Select top 1 File_Name=Dir.full_filesystem_path 
+        FROM 
+          (
+          Select file_name From dbo.EvenementsTraites Where file_seq = NbTotalFich -- il y a qqch dans dbo.EvenementsTraites
+          UNION ALL
+          Select file_name='' Where Not exists (Select * From dbo.EvenementsTraites) -- point de départ 
+          ) as ET
+          CROSS JOIN sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc) as Dir -- attention recursion possible!
+        Where 
+              Poursuivre.file_name is NULL -- Il n'y a plus rien de trouvé avec le fichier precedent
+          And Dir.full_filesystem_path > ET.file_name -- par raport au dernier fichier ou au tout debut si et.file_name = ''
+          And Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+        Order By Dir.full_filesystem_path 
+        ) as Suivant
+      ) as StartP
+      CROSS APPLY -- on va chercher les évènements et on a besoin en plus du event_data, le nom d'évenements et leur sequence
       (
       Select event_data = xEvents.event_data, Event_name, Event_Sequence, F.file_name, F.file_offset
       FROM 
-        sys.fn_xe_file_target_read_file(E.PathReadFileTargetPrm, NULL, StartP.file_name, StartP.last_Offset_done) as F 
+        sys.fn_xe_file_target_read_file(StartP.file_name, NULL, StartP.FilenamePourOffset, StartP.DernierOffsetConfirme) as F 
         CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
         CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
         CROSS APPLY (Select Event_Sequence = xEvents.event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
       ) as ev
+
+    -- pas de nouvel évènement ou cas de fichier vide (rare) trouvé en testant
+    -- dépend de la trace car ici on ne vide pas de fichier
+    If @@rowcount=0 
+    Begin
+      -- on va faire détruire ce fichier s'il y en a un autre après car il n'a rien retourné
+      Declare @fichVide sysname
+      Select @fichVide=full_filesystem_path 
+      From Dbo.FichierALiberer()
+      If @@rowcount>0
+      Begin
+        Insert into dbo.LogTraitementAudit(Msg)  Select 'Suppression !!! de fichier vide '+@FichVide
+        Exec master.sys.xp_delete_files @FichVide
+        Delete From dbo.EvenementsTraites
+      End
+      Else 
+        Waitfor Delay '00:00:15' -- pas de nouveaux evenements et pas de fichiers a detruire.
+      Continue -- on passe au prochain fichier
+    End
     --select * from #tmp Where event_name = 'user_event'
     --select * from #tmp Where event_name <> 'user_event'
     -- enlever de #tmp les evenements de login pour des fins de traitement
     
     --Select * from #tmp
-    -- inserer les évènements de login à la table d'historique des logins
-    -- le trigger en a de besoin pour lier le client_net_address et le client_app_name à l'instruction SQL
-    -- on a des cas ou la jointure vers sys.dm_exec_connections donne plus d'une rangée par session_id d'ou le distinct
+
+    -- Insérer dans la table d'historique des logins les événements de connexion
+    -- qui sont des événements utilisateurs déclenchés par le trigger LogonAuditReqTrigger.
+    -- Le trigger trgPipelineDeTraitementFinalDAudit utilise ces événements pour lier le client_net_address
+    -- et le client_app_name à l'instruction SQL.
+    -- L'utilisation de DISTINCT est nécessaire en raison de cas rares où la jointure avec sys.dm_exec_connections
+    -- retourne plus d'une ligne pour un même session_id, causé par des doublons dans sys.dm_exec_connections.
     Insert Into dbo.HistoriqueConnexions
           (LoginName,   Session_id,   LoginTime,   client_net_address,   client_app_name,   Event_Sequence)
     Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, Event_Sequence
@@ -635,8 +735,8 @@ Begin
       -- validation for JSON
       Where UserData like '_{"LoginName":"%","LoginTime":"%","spid":%,"client_net_address":"%","client_app_name":"%"}_' 
       ) as J
-    -- Ajout de résilience. Si le processus de traitement des évènements a été interrompu,
-    -- et qu'on retraite les évènements de login, ce bout de code évite les cas de duplicate.
+    -- Ajout de résilience : Si le processus de traitement des événements est interrompu,
+    -- et que les événements de login doivent être retraités, ce Not Exists permet d'éviter les doublons.
     Where
       Not Exists -- Si le processus a planté, et qu'on traite à nouveau les évènements de login
                  -- ce bout de code empêchera l'insertion de duplicate
@@ -649,8 +749,10 @@ Begin
       )            
 
     -- voir le instead of trigger qui traite Dbo.PipelineDeTraitementFinalDAudit
-    -- c'est lui qui ré-initialise aussi le contenu de dbo.evenements traités
+    -- c'est lui qui ré-initialise aussi le contenu de dbo.evenementsTraites pour laisser en information 
+    -- le nom du dernier fichier traité et le offset
     -- la résilience en cas de problème est garantie par le trigger
+
     Insert into Dbo.PipelineDeTraitementFinalDAudit
       ( server_principal_name, session_id, event_time, Event_Sequence, Database_Name
       --, sql_batch
@@ -665,6 +767,7 @@ Begin
       , event_time = Tmp.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
       , Tmp.Event_Sequence
       , database_name = Tmp.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
+      -- voir commentaire si on veut tracer les instructions des modules
       --, line_number = Tmp.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
       , statement = Tmp.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
       , Tmp.file_name
@@ -674,8 +777,13 @@ Begin
       From (SELECT * From #tmp Where event_name <> 'user_event') Tmp
       ) as R
     Where session_id>50
-    Set @eventsDone = @@ROWCOUNT 
-    -- si on traitait toute les requêtes on pourrait mettre le code du module SQL dans SQL+Batch seulement
+
+    -- ralentir plus ou moins la fréquence du traitement s'il n'y a plus d'autres fichiers en avant
+    If @@rowcount < 100 And Not Exists (Select * From Dbo.FichierALiberer()) 
+    Begin
+      Waitfor Delay '00:00:15' 
+    End
+    -- si on traitait toute les requêtes (incluant celle des modules) on pourrait mettre le code du module SQL dans SQL+Batch seulement
     -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
     -- actuellement on ne le fait pas, et statement est tout le module au démarrage de ce dernier.
     --OUTER APPLY 
@@ -694,115 +802,42 @@ Begin
       (
       Select file_Name from dbo.EvenementsTraites
       Except
-      Select full_filesystem_path  FROM sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
+      Select full_filesystem_path  FROM sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc) -- attention recursion possible!
+      Where full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
       ) as Diff
     If @@ROWCOUNT>0 
     Begin
       Declare @msgPerte nvarchar(4000)
       Select @msgPerte=E.MsgFichPerduGenerique From dbo.EnumsEtOpt as E
-      Raiserror (@msgPerte, 11, 1)
+      Insert into dbo.logTraitementAudit (Msg) Values (@msgPerte)
     End
 
-    -- cleanup des fichiers traités (exclure le dernier qui reste en usage)
-    Declare 
-      @aFileToDel nvarchar(256)
-    , @last_Offset_done Bigint 
-    , @file_Seq Int = 0 -- pré valeur, car la séquence commence à 1 et on veut un @file_Seq=à celui du courant
-    , @nbTotalFich Int
-    , @progres nvarchar(100)
-    While (1=1)
+    -- on ne détruit le fichier que s'il en existe de MOINS RECENTS que celui de dbo.EvenementsTraites
+    -- car on n'est pas sûr d'avoir fini le fichier dans dbo.EvenementsTraites qui a peut être d'autres offset a venir
+    Declare @aFileToDel nvarchar(256)
+    Select @aFileToDel = Autres.full_filesystem_path
+    From
+      (Select * From EnumsEtOpt) AS opt
+      CROSS APPLY (Select Top 1 file_name, last_Offset_done From dbo.EvenementsTraites Order By passe Desc) as DernFich
+      CROSS APPLY 
+      (
+      Select top 1 Autres.full_filesystem_path
+      From sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, opt.MatchFichTrc) Autres -- attention récursion possible!
+      Where Autres.full_filesystem_path < DernFich.file_name
+        And Autres.full_filesystem_path Like Opt.RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+      ) as Autres
+    Where Autres.full_filesystem_path IS NOT NULL
+    If @@ROWCOUNT > 0
     Begin
-      -- obtient prochain fichier relatif au @file_Seq courant, mais exclue les deux derniers
-      -- pourquoi deux plutôt qu'un seul?
-      -- il arrive au switch de fichier que le dernier soit écrit et devienne avant dernier
-      -- et n'est pas fini de lire. La fonction de lecture va donc se plaindre qu'il est manquant
-      Select Top 1 -- pour stopper la recherche car chaque rangée possède sa séquence unique
-        @file_Seq = File_Seq -- ordre des fichiers
-      , @aFileToDel = file_Name
-      , @nbTotalFich = NbTotalFich -- même valeur pour chaque rangée
-      , @last_Offset_done = last_Offset_done 
-      -- on fait -1 sur le nombre de fichiers à supprimer,  car on ne supprime pas le dernier.
-      , @progres=' ('+Convert(nvarchar, @File_Seq)+'/'+Convert(nvarchar, @NbTotalFich-1)+') '
-      From 
-        Dbo.EvenementsTraites CROSS APPLY (Select SeqFichSuiv=@file_Seq+1) as SeqFichSuiv
-      Where SeqFichSuiv < NbTotalFich And file_seq = SeqFichSuiv
-      Order by file_seq
-
-      If @@ROWCOUNT = 0 -- plus de noms de fichiers à supprimer déduit des dbo.evenementstraités.
-      Begin
-        -- Menage des fichiers dont les noms ne sont plus retournés par sys.fn_xe_file_target_read_file
-        -- Ils ne sont pas plus dans dbo.evenementstraites pour la même raison.
-        -- C'est possible à cause d'un rollover qui se ferait et qui éliminerait un fichier qu'on a vraiment fini de lire
-        -- mais comme on ne sait pas si c'est le cas, l'algorithnme de l'élimine pas. 
-        -- Il attend qu'il tombe en second à la prochaine lecture. Mais comme le RollOver supprime le fichier
-        -- avant qu'on aille relire, sys.fn_xe_file_target_read_file n'en retourne plus la trace. Ici on fait 
-        -- ménage "lazy" qui n'en fait qu'un à la fois, et ne touche jamais au dernier (plus récent)
-        -- qui est présent sur disque. On le présume comme appartenant à la trace active.
-        Select TOP 1 @aFileToDel = full_filesystem_path
-        FROM dbo.EnumsEtOpt cross apply sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc)
-        Where 
-          DateDiff(mi, last_write_time, GETUTCDATE()) > 1 -- fichiers plus écrits depuis plus d'une minute
-          And Not Exists -- et pas présents dans la liste des ficiers retournés par la fonction, alors qu'elle n'en voit plus qu'un
-          (
-          Select *
-          From dbo.EvenementsTraites 
-          Where file_name = full_filesystem_path 
-          )
-        Order by full_filesystem_path
-        If @@ROWCOUNT = 0 -- pas de fichier à traiter ici non plus, on passe, sinon on laisse détruire
-          Break
-        Set @last_Offset_done=NULL -- inconnu
-      End
-
-      -- on ne laisse pas faire de rollover au niveau des evènements, mais on détruit les fichiers qu'on a traité
-      -- toutefois même si on a fini de traiter les évènements du fichier, d'autres peuvent s'y ajouter entretemps
-      -- et il reste en usage, aussi on accepte l'erreur.
-      Begin Try
-        -- truc pour passer de l'information au profiler avec une instruction d'initialisation
-        Declare @trc Nvarchar(4000) = 'declare @trcPourProfiler varchar(4000) =''Fichier à ôter :'+ @afileToDel+@progres+''''
-        Exec(@trc)
-        Exec master.sys.xp_delete_files @afileToDel
-        Insert into dbo.LogTraitementAudit (Msg) 
-        Select 'Suppression/traitement fichier audit terminé: '+afileTodel+Msg
-        From 
-          (Select afileTodel= @afileToDel) as aFileToDel
-          CROSS APPLY
-          (
-          Select Msg = ' '+ @progres + 'At Offset '+CONVERT(nvarchar(40), @last_Offset_done)
-                    + ' pour '+CONVERT(nvarchar, @eventsDone)+ ' évènements '
-          Where @last_Offset_done is not null
-          UNION ALL
-          Select Msg = '. Fichier sans info car non retourné par sys.fn_xe_file_target_read_file, car Rollover l''a supprimé entre 2 lectures '
-          Where @last_Offset_done IS NULL
-          ) as Msg
-
-        -- élimine des évènements traités seulement celui qu'on vient de faire 
-        -- ne pas oublier qu'il en restera deux qui seront à traiter
-        -- si une panne empêche l'exécution de ce bout, ce qui ferait que les évènements seraient
-        -- reinsérés, le trigger teste que les évènements ne sont pas déjà insérés
-        Delete From dbo.EvenementsTraites Where file_seq=@File_Seq And @last_Offset_done IS NOT NULL
-      End Try
-      Begin Catch 
-        -- Si ce n'est pa une erreur de fichier en usage, renvoie la.
-        -- mais ce n'est pas supposé être jamais le cas d'un fichier en usage
-        Declare @msgDel nvarchar(4000) = ERROR_MESSAGE() 
-        Insert into dbo.LogTraitementAudit (Msg) 
-        Select 'Suppression fichier audit avec erreur: '+@afileToDel + @msgDel
-        If @MsgDel Not Like '%xp_delete_files() returned error 32%' 
-          THROW;
-      End Catch
+      Insert into dbo.LogTraitementAudit(Msg)  Select 'Suppression de '+@aFileToDel
+      Exec master.sys.xp_delete_files @afileToDel
     End
-
-    -- ralentir plus ou moins la fréquence du traitement dépendant du nombre d'évènements qu'on 
-    -- a trouvées comme restant à traiter.
-    If @eventsDone<500 
-      Waitfor Delay '00:00:05' 
     
     -- On ne veut pas que la table des connexions récentes à l'historique grossise toujours.
     -- Donc detruire les connexions de l'historique qui n'ont plus de session_id existant 
     -- et qui ont une connexion plus récente
-    -- un session_id peut cesser d'exister, sans que ses transactions soient toutes traitées
-    -- mais en pratique on en aura quelques unes
+    -- un session_id peut cesser d'exister, sans que ses transa
+    -- **** TODO : elimination de connexions passées en se basant sur les évènements plus récents sur les SPID
     Delete RC 
     From 
       (
