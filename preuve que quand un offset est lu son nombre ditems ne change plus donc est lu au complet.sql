@@ -33,6 +33,12 @@ From
 Where offsetSeq=2
 Select * from #tmp
 
+-- ici on reprend la lecture des tas de fois du dernier offset 
+-- (en fournissant l'offset précédent qui est l'avant dernier), car 
+-- sys.fn_xe_file_target_read_file lit après cet offset.
+-- on veut s'assurer que quand un offset est lu, il n'y aura plus d'autres entrées qui lui sont ajoutés
+-- Pourquoi? Parce que dans QueryAuditToolsForMsSql quand on lit le dernier, il n'y a rien de retourné
+-- et on fait comme s'il n'y aura plus rien de retourné avec cet offset
 declare @lect int = 0
 While (@lect < 300)
 Begin
@@ -51,5 +57,19 @@ Begin
   else
     Select @lect = @lect + 1
 End
-
---select 
+Set @lect = 0
+While (@lect < 300)
+Begin
+  If not exists
+  (
+  Select *
+  From
+    -- verifie qu'on peut essayer de lire souvent au dernier offset et n'avoir aucune rangée comme résultat
+    (Select FILE_NAME, file_offset, dernCount, dernOffset From #tmp) as prm1
+    outer apply (select file_name2=prm1.FILE_NAME Where file_offset is Not null) as file_name2
+    cross apply sys.fn_xe_file_target_read_file(File_Name, NULL, File_Name2, dernCount) as F
+  )
+  Select @lect = @lect + 1
+  Else
+    Select 'dernier offset lu, a retourné quelque chose, anormal'
+End -- While
