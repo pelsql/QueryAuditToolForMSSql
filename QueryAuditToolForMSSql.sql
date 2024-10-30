@@ -505,9 +505,11 @@ ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
 FOR LOGON
 AS
 BEGIN
-  -- By experience avoid at all costs reference to external user objects in this trigger
+  -- By experience avoid at all costs direct reference to EXTERNAL USER OBJECTS in this trigger
   -- if they are missing, they cause error, and this type of error means locking out everybody
-  -- from login
+  -- from login. It is possible to refer to external user objects through dynamic execution
+  -- which allow to catch error.
+  
   DECLARE @JEventDataBinary Varbinary(8000);
   Begin Try
     Select @JEventDataBinary = JEventDataBinary
@@ -575,6 +577,8 @@ Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
       Cross Apply (Select AtPos=atPos0+ISNULL(' in Sql Module:'+ErrProcedure,'')) as atPos
       Cross Apply (Select ErrMsg=Replace(FmtErrMsg3, '#atPos#', atPos) ) as FmtErrMsg
     Print @Msg
+    Exec ('DISABLE TRIGGER LogonAuditReqTrigger ON ALL Server')
+    --Exec dbo.SendEmail @Msg='AuditReq: Logon trigger detected an error during execution and has automatically disabled itself.'
   End Catch
 END;
 GO
