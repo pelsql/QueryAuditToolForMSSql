@@ -885,7 +885,7 @@ Begin
           -- on part au début de la liste de fichiers.
           Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ 
           UNION ALL
-          -- s'il y a quelque chose, on prend le fichier qui le suit sur disque
+          -- s'il y a quelque chose, on prend le dernier pour trouver plus loin ce qui suit sur disque
           Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc -- table à rangée unique
           ) as ET
           -- Obtenir les fichiers qui suivent, attention! sys.dm_os_enumerate_filesystem peut récurser dans un sous-répertoire
