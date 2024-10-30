@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.50 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.60 **[Version Française](#queryaudittoolformssql-français)**
 
 ## Why Another Query Audit Tool?
 
@@ -54,10 +54,17 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 - **Version 2.11** : Streamlining of a process (minor modification) and adjustments to tests
 - **Version 2.12** : RPC_Completed events added
 - **Version 2.50** : Many fixes to problems found under heavy load, and other resiliency features
+- **Version 2.60** : 
+  -  Correction to address the fact that event_Sequence resets to 1 each time the extended session restarts, which prevents unique identification of events. We now include the session start date to ensure uniqueness.
+
+  - We also took advantage of this update to enhance the handling of expired connections. Additionally, a fail-safe mechanism has been implemented: in the event of a recurring issue with the logon trigger, it will automatically deactivate to prevent prolonged interruptions.
+
+  - Finally, email notifications have been added for the dbo.CompleterInfoAudit procedure, with options added in dbo.EnumsEtOpt to configure the destination email and the mail server.
+
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.50
+Version 2.60
 
 ## Pourquoi un autre outil d'Audit de requête?
 
@@ -115,3 +122,9 @@ Tests de qualité réussis:
 - **Version 2.11** : Allègement d'un traitement (modification mineure) et ajustements aux tests
 - **Version 2.12** : Ajout des évènements RPC_Completed
 - **Version 2.50** : Nombreuses corrections aux problèmes rencontrés sous forte charge, ainsi que d'autres fonctionnalités de résilience.
+- **Version 2.60** : 
+  - Correction pour remédier au fait que event_Sequence redémarre à 1 à chaque redémarrage de la session étendue, ce qui empêche l’identification unique des événements. Nous ajoutons maintenant la date de démarrage de la session pour garantir cette unicité.
+
+  - Nous avons également tiré parti de cette modification pour optimiser la gestion des connexions périmées. En outre, un mécanisme fail-safe a été ajouté : en cas de problème récurrent avec le logon trigger, celui-ci se désactivera automatiquement pour éviter toute interruption prolongée.
+
+  - Enfin, une notification par email a été intégrée pour la procédure dbo.CompleterInfoAudit, avec l’ajout d’options dans dbo.EnumsEtOpt pour configurer l’adresse de destination et le serveur de messagerie.
