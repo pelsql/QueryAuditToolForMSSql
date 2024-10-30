@@ -44,7 +44,6 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 ### Future Improvement Plans:
 
 - Trace individual SQL module queries.
-- Add a pre-configuration mechanism for error reporting via email (with a choice of email server and recipients).
 
 # Version History
 
@@ -112,7 +111,6 @@ Tests de qualité réussis:
 
 ### Planification d'améliorations futures:
 - Traçage des requêtes individuelles des modules SQL.
-- Ajout d'un mécanisme de pré-configuration pour le rapport d'erreurs par courriel (avec choix du serveur de courriel et des destinataires).
 
 # Historique des versions
 
