@@ -1,14 +1,14 @@
 clear-host
-Set-Location D:\_SQL\QueryAuditToolForMSSql
+Set-Location D:\_SQL\QueryAuditToolForMSSql\MiscTests
 
  # Path to the .ps1 script you want to run in each new window
-$scriptPath = "D:\_SQL\QueryAuditToolForMSSql\ASingleTest.ps1"
+$scriptPath = "D:\_SQL\QueryAuditToolForMSSql\MiscTests\ASingleTest.ps1"
 
 # Define the number of windows you want to open
 $n = 20
 
 
-$filePath = "D:\_SQL\QueryAuditToolForMSSql\stopwatch.txt"
+$filePath = "D:\_SQL\QueryAuditToolForMSSql\MiscTests\stopwatch.txt"
 New-Item -Path $filePath -ItemType File
 
 # Loop to start n PowerShell windows, each running the same script

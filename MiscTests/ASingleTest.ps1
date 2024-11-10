@@ -1,13 +1,13 @@
 param (
   [int]$fenetre
 )
-Set-Location D:\_SQL\QueryAuditToolForMSSql
+Set-Location D:\_SQL\QueryAuditToolForMSSql\MiscTests
 Import-Module .\Invoke-SqlQueries.psm1 -Force
 
 $sql = "Select top 3000 id, seq=row_number() Over (order by id) From (Select id, Title from StackOverflow2013.dbo.Posts TABLESAMPLE (50000 ROWS)) as id Where title is not null"
 $ids = Invoke-SqlQueries -ServerInstance '.\SQL2K19' -Database StackOverflow2013 -Queries $sql -ThrowExceptionOnError -GetResultSet 1 -Verbose
 
-$filePath = "D:\_SQL\QueryAuditToolForMSSql\stopwatch.txt"
+$filePath = "D:\_SQL\QueryAuditToolForMSSql\MiscTests\stopwatch.txt"
 
 while (Test-Path -Path $filePath -PathType Leaf) 
 {
