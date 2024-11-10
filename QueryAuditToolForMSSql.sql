@@ -520,6 +520,7 @@ BEGIN
       , ExtendedSessionCreateTime
       From 
         (
+        -- if session isn't alive no data is produced
         select ExtendedSessionCreateTime=create_time -- to make unique event_sequence by session
         From Sys.dm_xe_sessions 
         Where name = 'AuditReq'
@@ -546,8 +547,10 @@ BEGIN
       ) as JEventData
       CROSS APPLY (Select JEventDataBinary=CAST(JEventData as Varbinary(8000))) as JEventDataBinary
 
-    -- Event ID (must be between 82 and 91)
-    EXEC sp_trace_generateevent @eventid = 82, @userinfo = N'LoginTrace', @UserData=@JEventDataBinary
+    -- Event ID (must be between 82 and 91), don't send events if event session isn't started.
+    -- see comment above : if session isn't alive no data is produced, so here @@rowcount is 0
+    If @@ROWCOUNT > 0
+      EXEC sp_trace_generateevent @eventid = 82, @userinfo = N'LoginTrace', @UserData=@JEventDataBinary
 
   End Try
   Begin Catch
@@ -616,7 +619,7 @@ If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'NbTotalFich') IS NOT NULL
 If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'Passe') IS NOT NULL 
   ALTER Table dbo.EvenementsTraitesSuivi Drop Column Passe
 If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'File_Seq') IS NOT NULL 
-  ALTER Table dbo.EvenementsTraites Drop Column File_Seq
+  ALTER Table dbo.EvenementsTraitesSuivi Drop Column File_Seq
 --default values for something only managed from version 2.5
 If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'ExtEvSessCreateTime') IS NULL And OBJECT_ID('dbo.EvenementsTraitesSuivi') IS NOT NULL
 Begin
@@ -656,7 +659,13 @@ If INDEXPROPERTY(Object_id('dbo.EvenementsTraitesSuivi'), 'iDateSuivi', 'isClust
 
 If COL_LENGTH ('dbo.HistoriqueConnexions', 'ExtendedSessionCreateTime') IS NULL 
   And OBJECT_ID('dbo.HistoriqueConnexions') IS NOT NULL
+Begin
   ALTER Table dbo.HistoriqueConnexions Add ExtendedSessionCreateTime Datetime
+  -- the trace is already running
+  Update dbo.HistoriqueConnexions 
+  Set ExtendedSessionCreateTime=Create_time
+  From (Select create_time From Sys.dm_xe_sessions where name = 'AuditReq') as tx
+End 
 
 If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'PK_HistoriqueConnexions', 'IsClustered') IS NOT NULL
   Alter table dbo.HistoriqueConnexions Drop constraint PK_HistoriqueConnexions
@@ -714,6 +723,9 @@ Begin
 End
 If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iSeqEvents', 'IsUnique') IS NULL
   Create Index iSeqEvents On dbo.AuditComplet (event_time, ExtendedSessionCreateTime, Event_Sequence)
+
+If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iUserTime', 'IsUnique') IS NULL
+  Create Index iUserTime On dbo.AuditComplet (server_principal_name, event_time)
 
 If Object_id('dbo.LogTraitementAudit') IS NULL
 Begin
@@ -797,12 +809,140 @@ Return
     ) as FichierEnOrdre
   Where Ordre=1 And nbFich>1 -- retourne ce premier fichier seulement s'il y en a d'autres
 GO
+--------------------------------------------------------------------------------------------------------------
+--
+-- Cette fonction qui était un morceau de code intégral de la procedure dbo.CompleterAudit
+-- a été isolé de la requête qui insère dans #Tmp afin de s'en servir aussi comme moyen de 
+-- faire de l'examen des évènements enregistrés sans perturber l'état du traitement en cours
+-- Les paramètres sont utiisés seulement lorsque on veut explorer les évènements pour faire des tests,
+-- sinon la fonction suit continue à partir des derniers évènements de dbo.EvenementsTraitesSuivi 
+-- 
+--------------------------------------------------------------------------------------------------------------
+Create Or Alter Function dbo.GetNextEvents (@fileName Nvarchar(256), @lastOffsetDone BigInt)
+Returns Table
+as
+Return
+  Select 
+    ev.file_name
+  , ev.file_Offset
+  , Event_name
+  , Event_Sequence 
+  , Ev.Event_time
+  , ev.event_data
+  from
+    (Select * From dbo.EnumsEtOpt) AS opt
+    OUTER APPLY
+    (
+    -- on est chanceux que sys.fn_xe_file_target_read_file donne les évènements en ordre avec les Offset
+    -- on a vérifié par des tests que lorsqu'un les evènements d'offset sont lu, il ne s'y en ajoute plus
+    -- cet Outer Apply me confirme si oui on non on trouve encore quelque chose à lire dans le fichier
+    -- donc qu'après le dernier offset, on a trouvé un nouvel offset.
+    Select E.file_name, DernierOffsetConfirme=E.last_Offset_done
+    From 
+      (
+      Select Top 1 File_Name, last_Offset_done From dbo.EvenementsTraitesSuivi Where @fileName Is NULL Order by dateSuivi desc
+      UNION ALL
+      Select File_Name=@fileName, last_Offset_done=@lastOffsetDone Where @fileName IS NOT NULL
+      ) As E -- c'est une table à rangée unique
+      CROSS APPLY (Select * From dbo.FileInfo(E.file_name) Where Existing=1) as Existing -- file must exists
+      -- limite à une rangée, parce qu'on veut juste confirmer existance du fichier et offset
+      cross apply (Select top 1 * From sys.fn_xe_file_target_read_file(E.file_name, NULL, E.file_name, E.last_Offset_done)) as F -- otherwise the is an error here
+    ) as SuiteMemeFich
+    CROSS APPLY
+    ( 
+    -- cet UNION ALL fait faire un switch de valeurs retournées
+    -- la première requête retourne le fichier existant avec le dernier offset
+    --    si on trouve un nouvel offset dans le dernier fichier lu
+    -- la seconde partie retourne le prochain fichier
+    --    a condition qu'il y ait un prochain fichier et que le dernier fichier lu (outer apply) 
+    --    n'a rien retourné. 
+
+    -- Si les deux requête de l'union ne retournent rien, le cross apply (alias startP) qui 
+    -- l'englobe ne retourne rien, et rien ne sera inséré dans #Tmp
+
+    Select -- si nouvel offset existe après
+      SuiteMemeFich.file_name
+    , FilenamePourOffset=SuiteMemeFich.file_name 
+    , SuiteMemeFich.DernierOffsetConfirme -- NULL fera la job
+    Where SuiteMemeFich.file_name is NOT NULL
+
+    UNION ALL 
+    Select Suivant.file_name, FilenamePourOffset=NULL, DernierOffsetConfirme=NULL
+    From
+      -- S'il n'y a plus rien de trouvé dans le fichier precedent, sinon arrêt de la requête
+      (Select FichierAvantTermine=1 Where SuiteMemeFich.file_name is NULL) as FichierAvantTermine 
+      CROSS JOIN
+      (
+      Select top 1 File_Name=Dir.full_filesystem_path 
+      FROM 
+        ( 
+        -- si il n'y a pas de dernier fichier dans dbo.EvenementsTraites (comme quand la procédure part)
+        -- on part au début de la liste de fichiers.
+        Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ 
+        UNION ALL
+        -- s'il y a quelque chose, on prend le dernier pour trouver plus loin ce qui suit sur disque
+        Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc -- table à rangée unique
+        ) as ET
+        -- Obtenir les fichiers qui suivent, attention! sys.dm_os_enumerate_filesystem peut récurser dans un sous-répertoire
+        -- par exemple comme quand on met un sous-répertoire de fichiers de trace dans le répertoire courant
+        -- on évite la situation en s'assurant par le Where que le résultat est du même répertoire pour le type de fichier cherché
+        JOIN sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, Opt.MatchFichTrc) as Dir 
+        ON  
+            Dir.full_filesystem_path > ET.file_name -- premier fichier ou prochain (voir commentaires e ET
+        And Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- empêcher résultats de récursion, si survient 
+      Order By Dir.full_filesystem_path 
+      ) as Suivant
+    ) as StartP -- point de départ pour prochain jeu d'évènements
+    CROSS APPLY -- on va chercher les évènements et on a besoin en plus du event_data, le nom d'évenements et leur sequence
+    (
+    Select event_data = xEvents.event_data, Event_name, Event_Sequence, F.file_name, F.file_offset, Event_time
+    FROM 
+      sys.fn_xe_file_target_read_file(StartP.file_name, NULL, StartP.FilenamePourOffset, StartP.DernierOffsetConfirme) as F 
+      CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
+      CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
+      CROSS APPLY (Select Event_Sequence = xEvents.event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
+      CROSS APPLY (select event_time = xEvents.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time') as Event_time
+    ) as ev
 -----------------------------------------------------------------------------------------------------
 -- Cette procedure fait joindre l'info sur les connexions avec les requêtes correspondantes
 -- Elle supprime aussi elle-même les fichiers traités.
 -- Cela est fait dans une boucle, un fichier à la fois pour éviter des surcharges de tempDb
 -----------------------------------------------------------------------------------------------------
 go
+--------------------------------------------------------------------------------------------------------------
+--
+-- Cette fonction qui était un morceau de code intégral dse la procedure dbo.CompleterAudit
+-- a été isolé de la requête qui insère dans #Tmp afin de s'en servir aussi comme moyen de 
+-- pour extraire l'information des évènements enregistrés sans perturber l'état du traitement en cours
+-- Les paramètres sont utiisés seulement lorsque on veut explorer les évènements pour faire des tests
+-- 
+--------------------------------------------------------------------------------------------------------------
+Create Or Alter Function dbo.ExtractConnectionInfoFromEvents (@event_data as Xml)
+Returns Table
+as
+Return
+Select J.*, UserData, UserDataBin, UserDataHexString, event_data
+From 
+  (Select event_data=@event_data) as Prm 
+  CROSS APPLY (SELECT UserDataHexString=event_data.value('(event/data[@name="user_data"]/value)[1]', 'nvarchar(max)')) AS UserDataHexString
+  -- conversion en hexadecimal
+  CROSS APPLY (SELECT UserDataBin = CONVERT(VARBINARY(MAX), '0x'+UserDataHexString, 1)) as UserDataBin
+  -- reconversion de l'hexadecimal en texte pour en tirer le contenu
+  CROSS APPLY (Select UserData=CAST(UserDataBin as NVARCHAR(4000))) as UserData
+  -- extraction texte JSON du contenu
+  Outer APPLY
+  (
+  SELECT 
+    LoginName=JSON_VALUE(value, '$.LoginName') 
+  , LoginTime=JSON_VALUE(value, '$.LoginTime')
+  , Session_id=JSON_VALUE(value, '$.spid')
+  , client_net_address=JSON_VALUE(value, '$.client_net_address')
+  , client_app_name=JSON_VALUE(value, '$.client_app_name') 
+  , ExtendedSessionCreateTime=JSON_VALUE(value, '$.ExtendedSessionCreateTime') 
+  FROM OPENJSON(UserData)
+  -- validation for JSON
+  ) as J
+GO
 Create or Alter Proc dbo.CompleterInfoAudit
 as
 Begin
@@ -811,6 +951,9 @@ Begin
   declare @CatchPassThroughMsgInTx table (msg nvarchar(max))
 
   Begin Try
+
+  Drop table if Exists #RcCount
+  Create table #RcCount (name sysname, cnt bigint)
   
   Drop table if Exists #tmp
   Create table #tmp 
@@ -834,80 +977,12 @@ Begin
     Select 
       ev.file_name
     , ev.file_Offset
-    , Event_name
-    , Event_Sequence 
+    , ev.Event_name
+    , ev.Event_Sequence 
     , Ev.Event_time
     , ev.event_data
     From 
-      (Select * From EnumsEtOpt) AS opt
-      OUTER APPLY
-      (
-      -- on est chanceux que sys.fn_xe_file_target_read_file donne les évènements en ordre avec les Offset
-      -- on a vérifié par des tests que lorsqu'un les evènements d'offset sont lu, il ne s'y en ajoute plus
-      -- cet Outer Apply me confirme si oui on non on trouve encore quelque chose à lire dans le fichier
-      -- donc qu'après le dernier offset, on a trouvé un nouvel offset.
-      Select E.file_name, DernierOffsetConfirme=E.last_Offset_done
-      From 
-        (Select Top 1 File_Name, last_Offset_done From dbo.EvenementsTraitesSuivi Order by dateSuivi desc) As E -- c'est une table à rangée unique
-        CROSS APPLY (Select * From dbo.FileInfo(E.file_name) Where Existing=1) as Existing -- file must exists
-        -- limite à une rangée, parce qu'on veut juste confirmer existance du fichier et offset
-        cross apply (Select top 1 * From sys.fn_xe_file_target_read_file(E.file_name, NULL, E.file_name, E.last_Offset_done)) as F -- otherwise the is an error here
-      ) as SuiteMemeFich
-      CROSS APPLY
-      ( 
-      -- cet UNION ALL fait faire un switch de valeurs retournées
-      -- la première requête retourne le fichier existant avec le dernier offset
-      --    si on trouve un nouvel offset dans le dernier fichier lu
-      -- la seconde partie retourne le prochain fichier
-      --    a condition qu'il y ait un prochain fichier et que le dernier fichier lu (outer apply) 
-      --    n'a rien retourné. 
-
-      -- Si les deux requête de l'union ne retournent rien, le cross apply (alias startP) qui 
-      -- l'englobe ne retourne rien, et rien ne sera inséré dans #Tmp
-
-      Select -- si nouvel offset existe après
-        SuiteMemeFich.file_name
-      , FilenamePourOffset=SuiteMemeFich.file_name 
-      , SuiteMemeFich.DernierOffsetConfirme -- NULL fera la job
-      Where SuiteMemeFich.file_name is NOT NULL
-
-      UNION ALL 
-      Select Suivant.file_name, FilenamePourOffset=NULL, DernierOffsetConfirme=NULL
-      From
-        -- S'il n'y a plus rien de trouvé dans le fichier precedent, sinon arrêt de la requête
-        (Select FichierAvantTermine=1 Where SuiteMemeFich.file_name is NULL) as FichierAvantTermine 
-        CROSS JOIN
-        (
-        Select top 1 File_Name=Dir.full_filesystem_path 
-        FROM 
-          ( 
-          -- si il n'y a pas de dernier fichier dans dbo.EvenementsTraites (comme quand la procédure part)
-          -- on part au début de la liste de fichiers.
-          Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ 
-          UNION ALL
-          -- s'il y a quelque chose, on prend le dernier pour trouver plus loin ce qui suit sur disque
-          Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc -- table à rangée unique
-          ) as ET
-          -- Obtenir les fichiers qui suivent, attention! sys.dm_os_enumerate_filesystem peut récurser dans un sous-répertoire
-          -- par exemple comme quand on met un sous-répertoire de fichiers de trace dans le répertoire courant
-          -- on évite la situation en s'assurant par le Where que le résultat est du même répertoire pour le type de fichier cherché
-          JOIN sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, Opt.MatchFichTrc) as Dir 
-          ON  
-              Dir.full_filesystem_path > ET.file_name -- premier fichier ou prochain (voir commentaires e ET
-          And Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- empêcher résultats de récursion, si survient 
-        Order By Dir.full_filesystem_path 
-        ) as Suivant
-      ) as StartP -- point de départ pour prochain jeu d'évènements
-      CROSS APPLY -- on va chercher les évènements et on a besoin en plus du event_data, le nom d'évenements et leur sequence
-      (
-      Select event_data = xEvents.event_data, Event_name, Event_Sequence, F.file_name, F.file_offset, Event_time
-      FROM 
-        sys.fn_xe_file_target_read_file(StartP.file_name, NULL, StartP.FilenamePourOffset, StartP.DernierOffsetConfirme) as F 
-        CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
-        CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
-        CROSS APPLY (Select Event_Sequence = xEvents.event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
-        CROSS APPLY (select event_time = xEvents.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time') as Event_time
-      ) as ev
+      dbo.GetNextEvents(null, null) as Ev -- le cours normal de l'avancement est basé sur dbo.evenementsTraitesSuivi, d'où les paramètres NULL
     Option (maxDop 1)
 --    select * from #tmp
     -- après un traitement précédent si on relit trop vite, on va attendre après des évènements dans le même fichier
@@ -950,26 +1025,7 @@ Begin
     Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, J.ExtendedSessionCreateTime, Tmp.Event_Sequence
     From 
       (Select * from #Tmp as Tmp Where Tmp.event_name = 'user_event') as Tmp
-      -- Extraction du binaire écrit en format texte hexadécimal
-      CROSS APPLY (SELECT UserDataHexString=event_data.value('(event/data[@name="user_data"]/value)[1]', 'nvarchar(max)')) AS UserDataHexString
-      -- conversion en hexadecimal
-      CROSS APPLY (SELECT UserDataBin = CONVERT(VARBINARY(MAX), '0x'+UserDataHexString, 1)) as UserDataBin
-      -- reconversion de l'hexadecimal en texte pour en tirer le contenu
-      CROSS APPLY (Select UserData=CAST(UserDataBin as NVARCHAR(4000))) as UserData
-      -- extraction texte JSON du contenu
-      Outer APPLY
-      (
-      SELECT 
-        LoginName=JSON_VALUE(value, '$.LoginName') 
-      , LoginTime=JSON_VALUE(value, '$.LoginTime')
-      , Session_id=JSON_VALUE(value, '$.spid')
-      , client_net_address=JSON_VALUE(value, '$.client_net_address')
-      , client_app_name=JSON_VALUE(value, '$.client_app_name') 
-      , ExtendedSessionCreateTime=JSON_VALUE(value, '$.ExtendedSessionCreateTime') 
-      FROM OPENJSON(UserData)
-      -- validation for JSON
-      Where UserData like '_{"LoginName":"%","LoginTime":"%","spid":%,"client_net_address":"%","client_app_name":"%"}_' 
-      ) as J
+      CROSS APPLY dbo.ExtractConnectionInfoFromEvents (Tmp.Event_Data) as J
     -- Ajout de résilience : Si le processus de traitement des événements est interrompu,
     -- et que les événements de login doivent être retraités, ce Not Exists permet d'éviter les doublons.
     Where
@@ -983,7 +1039,7 @@ Begin
         And CE.ExtendedSessionCreateTime = J.ExtendedSessionCreateTime
         And CE.event_sequence = Tmp.Event_Sequence
       )            
-    --**select * from dbo.HistoriqueConnexions order by Session_id, ExtendedSessionCreateTime, event_sequence, loginTime
+    --select * from dbo.HistoriqueConnexions order by Session_id, ExtendedSessionCreateTime, event_sequence, loginTime
 
     -- On garde une trace d'où en est rendu dans le fichier, son dernier offset, et les informations de session associées
     -- on peut reprendre un traitement avec des fichiers d'évènement restaurés, à condition qu'on retraite tout en ordre
@@ -996,6 +1052,8 @@ Begin
       ( 
       -- In working with a single file at the time, create_Time of its extended event session is all the same because a file 
       -- can't belong to more that a single session
+      -- Dbo.HistoriqueConnexions contains data that comes from Logon trigger generated events, and it doesn't generate events
+      -- if an extended session isn't active (to have coherence with other events)
       Select Top 1 ExtendedSessionCreateTime From Dbo.HistoriqueConnexions Order By ExtendedSessionCreateTime Desc
       ) as ExtEvInfo
       CROSS APPLY -- get last offset of the file to continue from there (the way extended events files are read, there is only one file done at the time)
@@ -1019,6 +1077,7 @@ Begin
     From (Select top 1 file_name, file_offset from #Tmp order by file_name desc, file_offset desc) as x
     Exec (@DebutPourProfiler )
 
+    Delete #RcCount Where name = 'insertAuditComplet' 
     Insert into dbo.AuditComplet 
     (
       server_principal_name
@@ -1040,8 +1099,8 @@ Begin
     , R.ExtendedSessionCreateTime
     , R.event_sequence
     , RC.database_name
-    , Hc.Client_net_address
-    , Hc.client_app_name
+    , Client_net_address.Client_net_address
+    , client_app_name.client_app_name
     , R.statement 
       --, sql_batch
       --, line_number
@@ -1079,7 +1138,9 @@ Begin
       -- il y a  des requêtes pour ce session_id=500 avec  event_sequence > 401 pour fichier 3
       -- donc si on veut associer les requêtes au bon login, il faut qu'il y ait égalité sur le session_id
       -- et trouver celui dont le event_sequence est plus petit et le plus proche que celui de la requête 
-
+      --
+      -- le Outer apply est là au cas où on ait des requêtes provenant de sessions non encore capturées et mises en évènements
+      -- parce que le login trigger ne capte pas les évènements si l'event session est inactif.
       OUTER APPLY 
       (
       Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
@@ -1097,6 +1158,29 @@ Begin
           )
       Order by Session_id, ExtendedSessionCreateTime desc, event_Sequence desc
       ) Hc
+      -- If the session ins't in the events it is because it login existed BEFORE the extended session started
+      -- so we get the existing info from sys.dm_exec_connections. In that context the user can modify the hotsname() returned
+      -- by sys.dm_exec_connecions
+      OUTER APPLY 
+      (
+      Select S.program_name, c.client_net_address 
+      from 
+        -- Shortcut the query is Client_net_address where resolved before by Hc.Client_net_address IS NULL 
+        (select * From sys.dm_exec_sessions as S Where Hc.Client_net_address IS NULL And S.session_id = R.session_id) as S
+        JOIN
+        sys.dm_exec_connections as C
+        ON C.session_id = S.session_id
+      ) as Ci
+      -- Three case possible, only one true. 
+      -- 1) Client connections was found in events. Even if events are old, user_event reporting connections are of the same age too.
+      -- case 2 and 3 are very rare.
+      -- 2) If not recorded in events, this may be that extended session was started after the connection. This is quite unlikely
+      --    because events and trigger are meant to be active at all time. In that case if session was started after, 
+      --    get it from actual sys.dm_exec_ views, which is quite accurate, but not 100% reliable
+      -- 3) If not found, give an explantion which the spid isn't there anymore. 
+      CROSS APPLY (Select client_app_name = COALESCE(hc.client_app_name, '(Cur)-> '+Ci.Program_name, 'Client program disconnected')) as client_app_name
+      CROSS APPLY (Select client_net_address = COALESCE(hc.client_net_address, '(Cur)-> '+Ci.client_net_Address, 'session is gone')) as client_net_Address
+
       -- Quand l'extended session part, il y a une ou deux connexions qui peuvent être déjà ouvertes, phénomène bref
     Where
       -- il y a une gestion des fichiers d'évènements traités
@@ -1111,15 +1195,10 @@ Begin
         And AC.event_sequence = R.event_Sequence
       )
 
-    --**select * From dbo.AuditComplet order by ExtendedSessionCreateTime, event_Sequence
-    --select * From dbo.AuditComplet order by event_time, ExtendedSessionCreateTime, event_Sequence
     -- ralentir plus ou moins la fréquence du traitement s'il n'y a plus d'autres fichiers en avant
     -- et qu'on a peu d'évènements.
     -- sur un serveur actif, le test @@rowcount = 0 est trop drastique, et risque de ne pas se produire
-    If @@rowcount < 100 And Not Exists (Select * From Dbo.FichierLiberable()) 
-    Begin
-      Waitfor Delay '00:00:15' 
-    End
+    Insert into #RcCount(name, cnt) Values ('insertAuditComplet', @@rowcount)
 
     -- si on traitait toute les requêtes (incluant celle des modules) on pourrait mettre le code du module SQL dans SQL+Batch seulement
     -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
@@ -1218,6 +1297,15 @@ Begin
     Where Cn.LoginTime < DATEADD(dd, -45, getdate()) -- détruit historique connexions si on en échappe qui sont plus vieux que 45j
 
     Commit -- Keep coherent 
+
+    -- on teste dehors du commit pour ne pas faire de wait dans la transaction
+    -- c'est malcommode de tester le contenu des tables car la transaction dure trop
+    -- longtemps pour rien quand il y a un wait dedans
+    If Exists (Select * From #RcCount Where name='insertAuditComplet'  and cnt < 100)
+       And Not Exists (Select * From Dbo.FichierLiberable()) 
+    Begin
+      Waitfor Delay '00:00:15' 
+    End
 
   End -- While forever
 

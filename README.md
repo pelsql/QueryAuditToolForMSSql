@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.60 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.61 **[Version Française](#queryaudittoolformssql-français)**
 
 ## Why Another Query Audit Tool?
 
@@ -59,11 +59,14 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
   - We also took advantage of this update to enhance the handling of expired connections. Additionally, a fail-safe mechanism has been implemented: in the event of a recurring issue with the logon trigger, it will automatically deactivate to prevent prolonged interruptions.
 
   - Finally, email notifications have been added for the dbo.CompleterInfoAudit procedure, with options added in dbo.EnumsEtOpt to configure the destination email and the mail server.
-
+- **Version 2.61** : 
+  - Adjustments: Modifications to allow direct migration from versions earlier than 2.60 to 2.61. Some of these adjustments will be removed as only one client is using a version prior to 2.60.
+  - Fix: Minor fix to resolve an issue where certain SQL Server Agent connections often remain open for extended periods, even predating the installation or update of the product. These connections are not detected by the logon trigger because it does not trigger connection events if the Extended Events session is inactive. In such cases, these connections can be viewed in the active sessions view. If they have not been tracked, it indicates they were already open before the logon trigger was activated.
+  - Query Rewriting: Some queries have been rewritten as functions to facilitate testing (see spyEvents) and to enable the use of these functions within dbo.CompleterAudit.
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.60
+Version 2.61
 
 ## Pourquoi un autre outil d'Audit de requête?
 
@@ -126,3 +129,8 @@ Tests de qualité réussis:
   - Nous avons également tiré parti de cette modification pour optimiser la gestion des connexions périmées. En outre, un mécanisme fail-safe a été ajouté : en cas de problème récurrent avec le logon trigger, celui-ci se désactivera automatiquement pour éviter toute interruption prolongée.
 
   - Enfin, une notification par email a été intégrée pour la procédure dbo.CompleterInfoAudit, avec l’ajout d’options dans dbo.EnumsEtOpt pour configurer l’adresse de destination et le serveur de messagerie.
+- **Version 2.61** : 
+  - Ajustements pour la migration directe des versions antérieures à 2.60 à 2.61. Certain de ces ajustements seront retirées car un seul client a des versions antérieures à 2.60
+  - Correctif : Correctif mineur visant à résoudre un problème où certaines connexions SQL Server Agent restent souvent ouvertes depuis une période prolongée, précédant même l’installation ou la mise à jour du produit. Ces connexions ne sont pas détectées par le logon trigger, car celui-ci ne déclenche pas d’événements de connexion si la session Extended Events n’est pas active. Dans ces cas, on peut observer les connexions dans la vue des sessions actives. En effet, si elles n’ont pas été tracées, c’est qu’elles étaient déjà ouvertes avant l’activation du logon trigger.
+  - Partie de requêtes réécrites en fonctions pour faciliter les tests (voir spyEvents) et l'utilisation de ces fonctions dans dbo.CompleterAudit
+  
