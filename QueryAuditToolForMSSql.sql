@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 2.6  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+AuditReq Version 2.61  Repository https://github.com/pelsql/QueryAuditToolForMSSql
 Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
 (To obtain the most recent version go to this link below)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
