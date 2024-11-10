@@ -80,12 +80,6 @@ Aucun des outils d'audit SQL existants ne résout ce problème :
 - **Extended Events**, qui remplace le Profiler SQL, offrant plus de performance et de flexibilité.
 - **Server Audit**, basé sur Extended Events, et donc sujet aux mêmes limitations.
 
-## Aucun des outils d'audit SQL existants ne résout ce problème :
-
-- SQL Profiler basé sur SQL Trace (désormais déconseillé en raison de son impact sur les performances).
-- Extended Events, qui remplace le Profiler SQL, offrant plus de performance et de flexibilité.
-- Server Audit, basé sur Extended Events, et donc sujet aux mêmes limitations.
-
 ## En quoi cet outil d'audit se distingue-t-il ?
 
 - Tout outil d'audit doit identifier l'auteur de la requête, ce que font les outils mentionnés ci-dessus. Le nom de l'utilisateur connecté ne peut déjà pas être altéré, ce qui est essentiel pour la fiabilité de l'audit.
