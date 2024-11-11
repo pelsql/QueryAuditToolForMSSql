@@ -662,9 +662,14 @@ If COL_LENGTH ('dbo.HistoriqueConnexions', 'ExtendedSessionCreateTime') IS NULL
 Begin
   ALTER Table dbo.HistoriqueConnexions Add ExtendedSessionCreateTime Datetime
   -- the trace is already running
+  Exec
+  (
+  '
   Update dbo.HistoriqueConnexions 
   Set ExtendedSessionCreateTime=Create_time
-  From (Select create_time From Sys.dm_xe_sessions where name = 'AuditReq') as tx
+  From (Select create_time From Sys.dm_xe_sessions where name = ''AuditReq'') as tx
+  '
+  )
 End 
 
 If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'PK_HistoriqueConnexions', 'IsClustered') IS NOT NULL
@@ -739,10 +744,11 @@ End
 GO
 --
 -- Selon edition aller chercher meilleur option de compression
+-- Compresser seulement les tables du schema .dbo
 -- 
 Set Nocount on
 Declare @Sql nvarchar(max)=''
-select @Sql=@Sql+Sql -- façon cheap de concatener toutes les requetes
+select @Sql=@Sql+Sql+NCHAR(10) -- façon cheap de concatener toutes les requetes
 From 
   (
   select 
@@ -758,9 +764,29 @@ From
   ,  ('%Azure SQL%', 'PAGE')
   ) CompressOpt (LikeEdition, Opt)
   ON Edition Like CompressOpt.LikeEdition
-  CROSS APPLY (select Tab=OBJECT_SCHEMA_NAME(object_id)+Dot+name from sys.tables) as Tab
+  CROSS APPLY 
+  (
+  select Tab=OBJECT_SCHEMA_NAME(object_id)+Dot+name, object_id
+  From sys.tables
+  Where OBJECT_SCHEMA_NAME(object_id)='dbo'
+  ) as Tab
   CROSS APPLY (Select Sql0=Replace(CompressTemplate, '#Tab#', Tab) ) as Sql0
   CROSS APPLY (Select Sql=Replace(sql0, '#Opt#', Opt) ) as Sql
+  CROSS APPLY -- remove those who are already compressed
+  (
+  SELECT 
+    p.data_compression_desc AS CompressionType
+  FROM
+    sys.partitions AS p 
+    JOIN sys.indexes AS i 
+    ON  p.object_id = i.object_id 
+    AND p.index_id = i.index_id 
+    AND (I.index_id=0 Or i.type_desc = 'CLUSTERED') -- index 0 est assimilé à la table si c'est un Heap, sinon c'est la clustered (1)
+  Where 
+      p.object_id = Tab.object_id 
+  And p.data_compression_desc = 'NONE'
+  ) as ACompresser
+Print @Sql
 Exec (@Sql)
 GO
 -- --------------------------------------------------------------------------------
