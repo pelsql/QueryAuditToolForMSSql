@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.62 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.6.2 **[Version Française](#queryaudittoolformssql-français)**
 
 Click **[here](#version-history)** for Version History
 
@@ -52,25 +52,25 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 - **Version 1.0:** Initial release (now obsolete).
 - **Version 2.0:** Eliminated the need to store connection information in a table at the login trigger level, replacing the mechanism with the use of a user event containing the necessary information. Events are now sequenced to associate queries with their session number and event sequence. This method avoids the difficulties of linking by rounded temporal data at the trace file level.
 - **Version 2.1:** Enhanced resilience to prevent event loss in case of interruption. Added a mechanism to prevent duplicate entries and implemented an automatic task restart every 15 minutes in case of stoppage. Support for multiple connections per session. Improved testing tools to simplify the verification of result accuracy, ensuring that no events are missing.
-- **Version 2.11** : Streamlining of a process (minor modification) and adjustments to tests
-- **Version 2.12** : RPC_Completed events added
-- **Version 2.50** : Many fixes to problems found under heavy load, and other resiliency features
-- **Version 2.60** : 
+- **Version 2.1.1** : Streamlining of a process (minor modification) and adjustments to tests
+- **Version 2.1.2** : RPC_Completed events added
+- **Version 2.5.0** : Many fixes to problems found under heavy load, and other resiliency features
+- **Version 2.6.0** : 
   -  Correction to address the fact that event_Sequence resets to 1 each time the extended session restarts, which prevents unique identification of events. We now include the session start date to ensure uniqueness.
 
   - We also took advantage of this update to enhance the handling of expired connections. Additionally, a fail-safe mechanism has been implemented: in the event of a recurring issue with the logon trigger, it will automatically deactivate to prevent prolonged interruptions.
 
   - Finally, email notifications have been added for the dbo.CompleterInfoAudit procedure, with options added in dbo.EnumsEtOpt to configure the destination email and the mail server.
-- **Version 2.61** : 
+- **Version 2.6.1** : 
   - Adjustments: Modifications to allow direct migration from versions earlier than 2.60 to 2.61. Some of these adjustments will be removed as only one client is using a version prior to 2.60.
   - Fix: Minor fix to resolve an issue where certain SQL Server Agent connections often remain open for extended periods, even predating the installation or update of the product. These connections are not detected by the logon trigger because it does not trigger connection events if the Extended Events session is inactive. In such cases, these connections can be viewed in the active sessions view. If they have not been tracked, it indicates they were already open before the logon trigger was activated.
   - Query Rewriting: Some queries have been rewritten as functions to facilitate testing (see spyEvents) and to enable the use of these functions within dbo.CompleterAudit.
-- **Version 2.62** : 
+- **Version 2.6.2** : 
   - Code has been added to address table compression. When upgrading from previous versions, avoid reapplying compression on tables that are already compressed, as SQL Server does not automatically verify the current compression state. Reapplying compression can be resource-intensive for large tables, particularly for dbo.AuditComplet
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.62
+Version 2.6.2
 
 Cliquer **[ici](#historique-des-versions)** pour l'historique des versions
 
@@ -120,19 +120,19 @@ Tests de qualité réussis:
 - **Version 1.0** : Première version (désormais obsolète).
 - **Version 2.0** : Élimination du besoin de mémoriser dans une table, au niveau du déclencheur de Login, les informations de connexions. Remplacement du mécanisme par l'utilisation d'un événement utilisateur contenant les informations nécessaires. Les événements sont dorénavant séquencés pour associer les requêtes à leur numéro de session et séquence d'événement. C'est une méthode qui n'est pas sujette aux difficultés de faire des liens par des données temporelles arrondies au niveau du fichier trace.
 - **Version 2.1** : Renforcement de la résilience pour éviter la perte d'événements en cas d'interruption. Ajout d'un mécanisme empêchant l'insertion de doublons et mise en place d'un redémarrage automatique de la tâche toutes les 15 minutes en cas d'arrêt. Prise en charge des connexions multiples par session. Amélioration des outils de test pour simplifier la vérification de l'exactitude des résultats, garantissant notamment l'absence d'événements manquants.
-- **Version 2.11** : Allègement d'un traitement (modification mineure) et ajustements aux tests
-- **Version 2.12** : Ajout des évènements RPC_Completed
-- **Version 2.50** : Nombreuses corrections aux problèmes rencontrés sous forte charge, ainsi que d'autres fonctionnalités de résilience.
-- **Version 2.60** : 
+- **Version 2.1.1** : Allègement d'un traitement (modification mineure) et ajustements aux tests
+- **Version 2.1.2** : Ajout des évènements RPC_Completed
+- **Version 2.5.0** : Nombreuses corrections aux problèmes rencontrés sous forte charge, ainsi que d'autres fonctionnalités de résilience.
+- **Version 2.6.0** : 
   - Correction pour remédier au fait que event_Sequence redémarre à 1 à chaque redémarrage de la session étendue, ce qui empêche l’identification unique des événements. Nous ajoutons maintenant la date de démarrage de la session pour garantir cette unicité.
 
   - Nous avons également tiré parti de cette modification pour optimiser la gestion des connexions périmées. En outre, un mécanisme fail-safe a été ajouté : en cas de problème récurrent avec le logon trigger, celui-ci se désactivera automatiquement pour éviter toute interruption prolongée.
 
   - Enfin, une notification par email a été intégrée pour la procédure dbo.CompleterInfoAudit, avec l’ajout d’options dans dbo.EnumsEtOpt pour configurer l’adresse de destination et le serveur de messagerie.
-- **Version 2.61** : 
+- **Version 2.6.1** : 
   - Ajustements pour la migration directe des versions antérieures à 2.60 à 2.61. Certain de ces ajustements seront retirées car un seul client a des versions antérieures à 2.60
   - Correctif : Correctif mineur visant à résoudre un problème où certaines connexions SQL Server Agent restent souvent ouvertes depuis une période prolongée, précédant même l’installation ou la mise à jour du produit. Ces connexions ne sont pas détectées par le logon trigger, car celui-ci ne déclenche pas d’événements de connexion si la session Extended Events n’est pas active. Dans ces cas, on peut observer les connexions dans la vue des sessions actives. En effet, si elles n’ont pas été tracées, c’est qu’elles étaient déjà ouvertes avant l’activation du logon trigger.
   - Partie de requêtes réécrites en fonctions pour faciliter les tests (voir spyEvents) et l'utilisation de ces fonctions dans dbo.CompleterAudit
   
-- **Version 2.62** : 
+- **Version 2.6.2** : 
   - Du code a été ajouté pour gérer la compression des tables lors d'une mise à niveau. Lors d'une mise à niveau, on évitera de réappliquer la compression sur des tables déjà compressées, car SQL Server ne vérifie pas automatiquement l’état de compression actuel. Réappliquer la compression peut être coûteux en ressources pour les grandes tables, notamment pour dbo.AuditComplet.
