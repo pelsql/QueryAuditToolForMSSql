@@ -1,5 +1,5 @@
 ﻿/*
-AuditReq Version 2.6.2  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+AuditReq Version 2.6.3  Repository https://github.com/pelsql/QueryAuditToolForMSSql
 Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
 (To obtain the most recent version go to this link below)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
@@ -696,16 +696,10 @@ If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'iExtendedSession', 'IsC
   On dbo.HistoriqueConnexions (ExtendedSessionCreateTime desc)
 GO
 
--- obsolete data to remove from previous versions
-If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iEvent_time', 'IsUnique') IS NOT NULL
-  Drop index iEvent_time On dbo.AuditComplet
-If COL_LENGTH ('dbo.AuditComplet', 'file_seq') IS NOT NULL 
-  ALTER Table dbo.AuditComplet Drop Column file_seq
-If COL_LENGTH ('dbo.AuditComplet', 'passe') IS NOT NULL 
-  ALTER Table dbo.AuditComplet Drop Column passe
-If COL_LENGTH ('dbo.AuditComplet', 'ExtendedSessionCreateTime') IS NULL 
+-- Add column version 2.6.3 -- valid from version 2.6.2
+If COL_LENGTH ('dbo.AuditComplet', 'DurMicroSec') IS NULL 
   And OBJECT_ID('dbo.AuditComplet') IS NOT NULL
-  ALTER Table dbo.AuditComplet Add ExtendedSessionCreateTime Datetime
+  ALTER Table dbo.AuditComplet Add DurMicroSec BigInt
   
 If Object_id('dbo.AuditComplet') IS NULL
 Begin
@@ -716,14 +710,15 @@ Begin
   , Client_net_address nvarchar(48) NULL
   ,	session_id int NULL
   , client_app_name sysname NULL
-  , database_name sysname 
+  , database_name sysname NULL
   --, sql_batch nvarchar(max)
   --, line_number int
-  , statement nvarchar(max) 
+  , statement nvarchar(max) NULL
   -- cette colonne combinée à event_sequence garantit une clé unique pour l'ordre des evènements 
   -- car event_sequence est remis à zéro lors du rédémarrage d'une session de trace.
   , ExtendedSessionCreateTime DateTime
   , event_sequence BigInt 
+  , DurMicroSec BigInt NULL
   ) 
 End
 If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iSeqEvents', 'IsUnique') IS NULL
@@ -856,7 +851,7 @@ Return
   , Ev.Event_time
   , ev.event_data
   from
-    (Select * From dbo.EnumsEtOpt) AS opt
+    (Select *, pFileName=@fileName, pLastOffsetDone=@lastOffsetDone From dbo.EnumsEtOpt) AS opt
     OUTER APPLY
     (
     -- on est chanceux que sys.fn_xe_file_target_read_file donne les évènements en ordre avec les Offset
@@ -866,10 +861,10 @@ Return
     Select E.file_name, DernierOffsetConfirme=E.last_Offset_done
     From 
       (
-      Select Top 1 File_Name, last_Offset_done From dbo.EvenementsTraitesSuivi Where @fileName Is NULL Order by dateSuivi desc
+      Select Top 1 File_Name, last_Offset_done From dbo.EvenementsTraitesSuivi Where pfileName Is NULL Order by dateSuivi desc
       UNION ALL
-      Select File_Name=@fileName, last_Offset_done=@lastOffsetDone Where @fileName IS NOT NULL
-      ) As E -- c'est une table à rangée unique
+      Select File_Name=pfileName, last_Offset_done=plastOffsetDone Where pfileName IS NOT NULL
+      ) As E 
       CROSS APPLY (Select * From dbo.FileInfo(E.file_name) Where Existing=1) as Existing -- file must exists
       -- limite à une rangée, parce qu'on veut juste confirmer existance du fichier et offset
       cross apply (Select top 1 * From sys.fn_xe_file_target_read_file(E.file_name, NULL, E.file_name, E.last_Offset_done)) as F -- otherwise the is an error here
@@ -898,16 +893,16 @@ Return
       -- S'il n'y a plus rien de trouvé dans le fichier precedent, sinon arrêt de la requête
       (Select FichierAvantTermine=1 Where SuiteMemeFich.file_name is NULL) as FichierAvantTermine 
       CROSS JOIN
-      (
+      ( -- prochain fichier du répertoire qui suit le dernier traité sinon le tout premier si jamais rien traité
       Select top 1 File_Name=Dir.full_filesystem_path 
       FROM 
         ( 
         -- si il n'y a pas de dernier fichier dans dbo.EvenementsTraites (comme quand la procédure part)
         -- on part au début de la liste de fichiers.
-        Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ 
+        Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ si rien traité
         UNION ALL
         -- s'il y a quelque chose, on prend le dernier pour trouver plus loin ce qui suit sur disque
-        Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc -- table à rangée unique
+        Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc 
         ) as ET
         -- Obtenir les fichiers qui suivent, attention! sys.dm_os_enumerate_filesystem peut récurser dans un sous-répertoire
         -- par exemple comme quand on met un sous-répertoire de fichiers de trace dans le répertoire courant
@@ -916,6 +911,9 @@ Return
         ON  
             Dir.full_filesystem_path > ET.file_name -- premier fichier ou prochain (voir commentaires e ET
         And Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- empêcher résultats de récursion, si survient 
+        -- éliminer cas rare où fichier suivant peut être trouvé vide alors qu'il y en a d'autre après qui ne le sont pas
+        -- j'imagine à cause d'une interruption/reprise de la trace
+        And Exists (Select * From sys.fn_xe_file_target_read_file(Dir.full_filesystem_path, NULL, NULL, NULL))
       Order By Dir.full_filesystem_path 
       ) as Suivant
     ) as StartP -- point de départ pour prochain jeu d'évènements
@@ -969,6 +967,34 @@ From
   -- validation for JSON
   ) as J
 GO
+--Drop Sequence if Exists dbo.SeqImport
+go
+If OBJECT_ID('Dbo.SeqImport') IS NULL 
+  Create Sequence dbo.SeqImport as BigInt Start With 1 Increment by 1; 
+go
+-- this function's use is to turn on some tracing capabilities of source data processed
+-- by the stored proc.  When set to off (0) run code to recreate the table below.
+Create Or Alter Function dbo.ModeDebug () 
+Returns int 
+Begin 
+ Return 0 -- default for production
+End
+GO
+-- this table have 2 uses.  First it supply columns definition for the #tmp table used in 
+-- Dbo.CompleterAudit. If the function dbo.ModeDebug()=0, run code below to recreate the table.
+If dbo.ModeDebug()=0 Drop table if exists dbo.TraceDataModel
+GO
+Create table dbo.TraceDataModel
+(
+  SeqImport Bigint
+, file_name nvarchar(260) NOT NULL -- selon donc sys.fn_xe_file_target_read_file
+,	file_Offset bigint NOT NULL -- selon donc sys.fn_xe_file_target_read_file
+, event_name nvarchar(128)
+, Event_Sequence BigInt
+, event_time datetimeoffset(7) NULL
+, event_data XML NULL
+)
+Go
 Create or Alter Proc dbo.CompleterInfoAudit
 as
 Begin
@@ -982,15 +1008,15 @@ Begin
   Create table #RcCount (name sysname, cnt bigint)
   
   Drop table if Exists #tmp
-  Create table #tmp 
-  (
-    file_name nvarchar(260) NOT NULL -- selon donc sys.fn_xe_file_target_read_file
-  ,	file_Offset bigint NOT NULL -- selon donc sys.fn_xe_file_target_read_file
-  , event_name nvarchar(128)
-  , Event_Sequence BigInt
-  , event_time datetimeoffset(7) NULL
-  , event_data XML NULL
-  )
+  Select Top 0 -- create the table with top 0 (to get only the model, no rows) and select into.
+    file_name 
+  ,	file_Offset    
+  , event_name     
+  , Event_Sequence 
+  , event_time     
+  , event_data     
+  Into #Tmp
+  From dbo.TraceDataModel
 
   While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
   Begin
@@ -1010,6 +1036,7 @@ Begin
     From 
       dbo.GetNextEvents(null, null) as Ev -- le cours normal de l'avancement est basé sur dbo.evenementsTraitesSuivi, d'où les paramètres NULL
     Option (maxDop 1)
+
 --    select * from #tmp
     -- après un traitement précédent si on relit trop vite, on va attendre après des évènements dans le même fichier
     -- et on peut en trouver trop peu ce qui va créer plus d'entrées dans dbo.evenementsTraitesSuivi
@@ -1024,6 +1051,16 @@ Begin
       Waitfor Delay '00:00:05' -- pas de nouveaux evenements et pas de fichiers a detruire.
       Continue 
     End
+
+    -- store source data in case of the need for debug.
+    declare @SeqImport BigInt 
+    Set @SeqImport = Next Value For dbo.SeqImport
+    Insert into dbo.TraceDataModel
+    Select *
+    From
+      -- could it be done without @SeqImport if "Next Value For dbo.SeqImport" could be in place of @SeqImport
+      (Select SeqImport=@SeqImport Where dbo.ModeDebug()=1) as SeqImport
+      CROSS JOIN #Tmp
 
     -- Insérer dans la table d'historique des logins les événements de connexion
     -- qui sont des événements utilisateurs déclenchés par le trigger LogonAuditReqTrigger.
@@ -1117,6 +1154,7 @@ Begin
       --, sql_batch
       --, line_number
     , statement
+    , DurMicroSec
     )
     SELECT 
       R.server_principal_name
@@ -1130,6 +1168,7 @@ Begin
     , R.statement 
       --, sql_batch
       --, line_number
+    , R.DurMicroSec
     From
       (
       Select 
@@ -1142,6 +1181,7 @@ Begin
       -- voir commentaire si on veut tracer les instructions des modules
       --, line_number = Tmp.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
       , statement = Tmp.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
+      , DurMicroSec = Tmp.event_data.value('(event/data[@name="duration"]/value)[1]', 'bigint')
       From 
         (Select * from #Tmp as Tmp Where Tmp.event_name <> 'user_event') as Tmp
         CROSS JOIN
@@ -1171,16 +1211,13 @@ Begin
       (
       Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
       From Auditreq.dbo.HistoriqueConnexions as Hc
-      Where Hc.session_id = R.session_id -- POUR LA MÊME SESSION!
+      Where 
+        Hc.session_id = R.session_id -- POUR LA MÊME SESSION!
         And 
-          (  
-              ( -- typiquement les créations de sessions SQL se trouvent proches dans le temps des requêtes qui les suivent
-                -- et souvent dans le même fichier/offset
-                  Hc.ExtendedSessionCreateTime = R.ExtendedSessionCreateTime
-              And Hc.event_Sequence < R.event_Sequence
-              )
-             -- Mais la session SQL peut aussi avoir été logguée dans le fichier/offset precedent de cette session
-          Or Hc.ExtendedSessionCreateTime < R.ExtendedSessionCreateTime
+          ( -- typiquement les créations de sessions SQL se trouvent proches dans le temps des requêtes qui les suivent
+            -- et souvent dans le même fichier/offset
+              Hc.ExtendedSessionCreateTime = R.ExtendedSessionCreateTime
+          And Hc.event_Sequence < R.event_Sequence
           )
       Order by Session_id, ExtendedSessionCreateTime desc, event_Sequence desc
       ) Hc
@@ -1280,12 +1317,13 @@ Begin
       Exec master.sys.xp_delete_files @afileToDel
     End
 
-    -- On ne veut pas que la table des connexions récentes à l'historique grossise indfiniment.
+    -- On ne veut pas que la table des connexions récentes à l'historique grossise indéfiniment.
     -- On sait que si une session_id existe en multiples copies (login/logout) et pas nécessairement toutes du même
     -- utilisateur, ce qui arrive lors des reconnexions, il faut s'aligner sur l'info la plus récente.
     -- pendant le traitement des évènements du fichier, on besoin de toutes, mais après
     -- on supprime les connexions périmées, sauf leur dernière occurence qui est peut être toujours ouverte
-    -- et pour laquelle s'en viennent d'autres évènements.
+    -- et pour laquelle s'en viennent d'autres évènements 
+    -- ou évidemment qui est toujours ouverte si une requête y roule toujours
 
     -- Select * From dbo.HistoriqueConnexions as C Order by Session_id, ExtendedSessionCreateTime, event_sequence
     Delete C
