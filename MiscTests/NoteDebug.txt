@@ -1,5 +1,0 @@
-Ne pas oublier:
-Si la job arrête sur une erreur, elle ne donnera pas nécessairement une erreur. Donc on la roule à la main pour la voir.
-Il y a aussi la table dbo.LogTraitementAudit qui loggue des messages d'erreur ou non.
-Il y a le répertoire MiscTests
-Regarder aussi le message d'erreur qui va avec les second step de la job

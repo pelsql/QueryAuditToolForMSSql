@@ -1,39 +1,57 @@
 ﻿/*
-AuditReq Version 2.6.3  Repository https://github.com/pelsql/QueryAuditToolForMSSql
+FullQryAudit Version 2.7 Repository https://github.com/pelsql/QueryAuditToolForMSSql
 Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
 (To obtain the most recent version go to this link below)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
 -- -----------------------------------------------------------------------------------
--- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS DE NOM DE FICHIER ET DE RÉPERTOIRE
--- DANS LA VUE DBO.ENUMSETOPT
--- L'installation préserve le data déjà là. Pour un vrai redémarrage, supprimer AuditReq
--- BEFORE RUNNING THIS SCRIPT ADJUST FILE NAME AND DIRECTORY OPTIONS 
--- IN VIEW DBO.ENUMSETOPT
+-- ADJUST ADMIN OTIONS BEFORE RUNNING THIS SCRIPT
+-- Search for: -- Admin config options to configure
+-- This install is designed to keep existing data. For a full restart, suppress FullQryAudit database
+
+-- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS ADMINISTRATIVES
+-- Chercher: -- Admin config options to configure
+-- L'installation préserve le data qui existe déjà. Pour un vrai redémarrage, supprimer FullQryAudit
 -- -----------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
-AuditReq : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
-Auteur   : Maurice Pelchat
-Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
-           Prendre note des clauses de responsabilités associées à cette Licence au lien ci-dessus
+FullQryAudit : Tool to produce managed audit of SQL queries by the mean of a SQL Server database
+Author       : Maurice Pelchat
+Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
+               Take note of the liability clauses associated with this License at the link above
 -------------------------------------------------------------------------------------------------------
-AuditReq : Tool to produce managed audit of SQL queries by the mean of a SQL Server database
-Auteur   : Maurice Pelchat
-Licence  : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
-           Take note of the liability clauses associated with this License at the link above
+FullQryAudit : Outil produisant un audit géré de requêtes SQL par le biais d'une base de données SQL Server
+Auteur       : Maurice Pelchat
+Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/LICENSE
+               Prendre note des clauses de responsabilités associées à cette Licence au lien ci-dessus
 -------------------------------------------------------------------------------------------------------
 */
+-- Register a temporary table.
+-- This table contains the version number of this script.
+-- It allows the creation of the view dbo.version later in the script once the database is created.
+Drop table if exists #version; Select Version='2.7' into #version
+Go
 Use tempdb
 go
-If DB_ID('AuditReq') IS NULL -- créer database si absente
+-- If the FullQryAudit database does not exist, it will be created.
+-- The database is set with FULL recovery mode, and file growth settings are adjusted to accommodate potential large audit logs.
+If DB_ID('FullQryAudit') IS NULL 
 Begin 
-  CREATE DATABASE AuditReq
-  alter DATABASE AuditReq Set recovery FULL
-  alter database AuditReq modify file ( NAME = N'AuditReq', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
-  alter database AuditReq modify file ( NAME = N'AuditReq_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
-END
+  CREATE DATABASE FullQryAudit
+  alter DATABASE FullQryAudit Set recovery FULL
+  alter database FullQryAudit modify file ( NAME = N'FullQryAudit', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
+  alter database FullQryAudit modify file ( NAME = N'FullQryAudit_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
+End
 GO
-Use AuditReq
+Use FullQryAudit
 GO
+DROP TRIGGER IF EXISTS LogonFullQryAuditTrigger ON ALL SERVER;
+GO
+-- This function dynamically replaces placeholders in a template string.
+-- It is used for generating SQL statements or configurations by substituting 
+-- specific tags (e.g., '#Tag#') with corresponding values ('@Val') at runtime.
+-- Helps automate script creation and reduces repetitive code.
+-- It also simplify single quote management in string by allowing double quotes in place 
+-- of single quotes which is troublesome in string because they needed to be doubled.
+-- by replacing " by ''
 Create Or Alter Function dbo.TemplateReplace(@tmp nvarchar(max), @Tag nvarchar(max), @Val nvarchar(max))
 Returns Nvarchar(max)
 as
@@ -41,31 +59,62 @@ Begin
   Return(Select rep=REPLACE(Replace(@tmp, '"', ''''), @Tag, @Val))
 End
 GO
+-- Create version view from info stored in #version table.
+-- This instruction generates a view that provides the script version 
+-- and a corresponding message indicating the version installed.
+-- It enables querying the version of the script installed in the database 
+-- and ensures traceability of the deployment version.
+Declare @Sql Nvarchar(max)
+Select @Sql = dbo.TemplateReplace(t, '#version#', t.version)
+From 
+  (
+  Select 
+    version
+  , t='
+Create or Alter View Dbo.Version
+as 
+(
+Select Version, MsgVersion
+From 
+  (select version="#version#") as Version
+  Cross Apply (Select MsgVersion = "Version #Version# installed") as MsgShow
+)
+' 
+  from #version
+  ) as t
+Print @Sql
+Exec (@Sql)
+Go
 --------------------------------------------------------------------------------------
--- Some items related to 
-Create Or Alter View Dbo.EnumsEtOpt
+-- Some items related to this script config.
+--------------------------------------------------------------------------------------
+Create Or Alter View Dbo.EnumsAndOptions
 as
 Select 
-  MaxFichier
+  MaxFiles
 , EC.RootAboveDir, Dir, EC.JobName, RepFichTrc, PathReadFileTargetPrm, TargetFnCreateEvent, RepFich, MatchFichTrc
 , EC.EMailForAlert, EC.mailserver_name, EC.SmtpPort, EC.enable_ssl, EC.EmailUserName, EC.EmailPassword 
-, EC.PrefixMsgFichPerdu 
+, EC.LostFileMsgPrefix 
 , EC.ErrMsgTemplate
-, MsgFichPerduGenerique=PrefixMsgFichPerdu+ ' voir table dbo.LogTraitementAudit'
+, GenericLostFileMsg=LostFileMsgPrefix+ ' see table dbo.ProcessAuditLog'
 , Actions.*
 From 
   (
   Select 
-    EspaceDisquePourTraceEnGB=70
-  , JobName='AuditReq' -- AJUSTER SELON VOTRE CONVENANCE
-  , RootAboveDir='D:\_Tmp\' -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , EMailForAlert='admin@yourDomain.Com' -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , mailserver_name = '127.0.0.1' -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , SmtpPort = 25 -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , enable_ssl = 0 -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , EmailUsername = NULL -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , EmailPassword = NULL -- AJUSTER SELON VOTRE ENVIRONNEMENT
-  , PrefixMsgFichPerdu='Fichier audit perdu: '
+
+    -- Admin config options to configure
+    MaxSpaceInGB_ForExEventSessTargetFiles=70
+  , JobName='FullQryAudit' -- name of job / extended event session, not for database
+  , RootAboveDir='D:\_Tmp\'  -- directory that contains the directory where the trace file are stored
+  , EMailForAlert='admin@yourDomain.Com' -- domain to show in administrative error message for Audit
+  , mailserver_name = '127.0.0.1' -- Address of the mail server to use for administrative tasks
+  , SmtpPort = 25 -- port of the mail server to use for administrative tasks
+  , enable_ssl = 0 -- enable ssl to communicate with mail server to use for administrative tasks
+  , EmailUsername = NULL -- (leave as is for anonymous login)
+  , EmailPassword = NULL -- (leave as is for anonymous login)
+    -- End of Admin config options to configure
+
+  , LostFileMsgPrefix='Lost audit file: '
   , ErrMsgTemplate=
 '----------------------------------------------------------------------------------------------
  -- Msg: #ErrMessage#
@@ -80,36 +129,37 @@ From
   CROSS APPLY (Select MatchFichTrc=JobName+'*.xel') As MatchFichTrc  -- ne pas changer
   CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
   CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+JobName+'.Xel') as TargetFnCreateEvent
-  CROSS APPLY (Select MaxFichier=Convert(nvarchar,EC.EspaceDisquePourTraceEnGB*1024/40)) as MaxFichier
+  CROSS APPLY (Select MaxFiles=Convert(nvarchar,EC.MaxSpaceInGB_ForExEventSessTargetFiles*1024/40)) as MaxFiles
   CROSS APPLY
   (
   Select 
     TplExSessStop=
-'If Exists (Select * From Sys.dm_xe_sessions where name = "AuditReq")
-  ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP
+'If Exists (Select * From Sys.dm_xe_sessions where name = "FullQryAudit")
+  ALTER EVENT SESSION FullQryAudit ON SERVER STATE = STOP
 Else 
-  Print "EVENT SESSION AuditReq is already stopped, so no attempt to Stop"'
+  Print "EVENT SESSION FullQryAudit is already stopped, so no attempt to Stop"'
   , TplExSessDrop=
-'-- If AuditReq Event Session exists, drop it 
-If Exists(Select * From sys.server_event_sessions WHERE name = "AuditReq")
-  DROP EVENT SESSION AuditReq ON SERVER
+'-- If FullQryAudit Event Session exists, drop it 
+If Exists(Select * From sys.server_event_sessions WHERE name = "FullQryAudit")
+  DROP EVENT SESSION FullQryAudit ON SERVER
 Else 
-  Print "EVENT SESSION AuditReq does not exists, so no attempt to drop"'
+  Print "EVENT SESSION FullQryAudit does not exists, so no attempt to drop"'
   , TplExSessCreate=
 '-- here we don"t test if session status and existence because everything to clear out 
 -- previous session would"ve have been generated
--- If AuditReq Event Session doesn"t exists create it
-If Exists(Select * From sys.server_event_sessions WHERE name = "AuditReq") 
+-- If FullQryAudit Event Session doesn"t exists create it
+If Exists(Select * From sys.server_event_sessions WHERE name = "FullQryAudit") 
 Begin
-  Print "EVENT SESSION AuditReq already exists, so no attempt to create"
+  Print "EVENT SESSION FullQryAudit already exists, so no attempt to create"
   Return
 End
-CREATE EVENT SESSION AuditReq ON SERVER
+CREATE EVENT SESSION FullQryAudit ON SERVER
   ADD EVENT sqlserver.user_event
   (
     ACTION (package0.event_sequence)
     WHERE [sqlserver].[is_system]=(0) 
-      And [sqlserver].[Session_id] > 50 -- process utilisateur
+      -- users and server utilies processes (SQLTelemetry, SQLAgent, DatabaseMail..)
+      And [sqlserver].[Session_id] > 50 
   )
 , ADD EVENT sqlserver.rpc_completed
   (
@@ -122,7 +172,8 @@ CREATE EVENT SESSION AuditReq ON SERVER
     , package0.event_sequence
     )
     WHERE [sqlserver].[is_system]=(0) 
-      And [sqlserver].[Session_id] > 50 -- process utilisateur
+       -- users and server utilies processes (SQLTelemetry, SQLAgent, DatabaseMail..)
+      And [sqlserver].[Session_id] > 50 
   )
 , ADD EVENT sqlserver.sql_statement_completed
   (
@@ -135,15 +186,16 @@ CREATE EVENT SESSION AuditReq ON SERVER
     , package0.event_sequence
     )
     WHERE [sqlserver].[is_system]=(0)
+       -- users and server utilies processes (SQLTelemetry, SQLAgent, DatabaseMail..)
       And [sqlserver].[Session_id] > 50 -- process utilisateur
   )
 ADD TARGET package0.asynchronous_file_target(
 SET 
   filename = "#TargetFnCreateEvent#"
-, max_file_size = (40) -- fichier n meg (MB unité par défaut)
--- essayer de repousser au maximum le rollover 
--- puisque la procédure gère elle-même quand ôter les évènements quand elle les a traité
-, max_rollover_files = (#MaxFichier#) -- ajusté en fonction du parametre EspaceDisquePourTraceEnGB
+, max_file_size = (40) -- file in meg unit (MB unité par défaut)
+-- push to max rollover because main sp process manage itself removal of files
+-- computed from MaxSpaceInGB_ForExEventSessTargetFiles from 40Mb size for files
+, max_rollover_files = (#MaxFiles#) 
 )
 WITH 
   (
@@ -157,20 +209,28 @@ WITH
   )'
   , TplExSessStart =
 '
-If Not Exists (Select * From Sys.dm_xe_sessions where name = "AuditReq")
-  ALTER EVENT SESSION AuditReq ON SERVER STATE = START
+If Not Exists (Select * From Sys.dm_xe_sessions where name = "FullQryAudit")
+Begin
+  ALTER EVENT SESSION FullQryAudit ON SERVER STATE = START
+  Waitfor Delay "00:00:05"
+End
 Else
-  Print "Session AuditReq is already started, so no attempt to start"
+  Print "Session FullQryAudit is already started, so no attempt to start"
 '
   ) As tpl
   CROSS APPLY
   (
-  Select [STOP], [Drop], [Create], [Start]
+  Select [StopExtendedSession], [DropExtendedSession], [CreateExtendedSession], [StartExtendedSession]
   From
     (
     Select Action, Sql
     From 
-      (Select StopES='Stop', DropES='Drop', CreateES='Create', StartES='Start') as TagAct
+      (Select 
+         StopES='StopExtendedSession'
+       , DropES='DropExtendedSession'
+       , CreateES='CreateExtendedSession'
+       , StartES='StartExtendedSession'
+       ) as TagAct
       Cross Apply
       (
       Values (StopES, tpl.TplExSessStop)
@@ -179,50 +239,53 @@ Else
            , (StartES, tpl.TplExSessStart) 
       ) as Tp (action, tp)
       Cross Apply (Select r1=dbo.TemplateReplace(tp, '#TargetFnCreateEvent#', TargetFnCreateEvent) ) as r1
-      Cross Apply (Select Sql=dbo.TemplateReplace(r1, '#MaxFichier#', MaxFichier) ) as Sql
+      Cross Apply (Select Sql=dbo.TemplateReplace(r1, '#MaxFiles#', MaxFiles) ) as Sql
     ) as ActionRows
-  PIVOT (Max(Sql) For Action IN ([STOP], [DROP], [CREATE], [START])) as PivotTable
+  PIVOT (Max(Sql) For Action IN ([StopExtendedSession], [DropExtendedSession], [CreateExtendedSession], [StartExtendedSession])) as PivotTable
   ) as Actions
 
--- select * from Dbo.EnumsEtOpt
+-- select * from Dbo.EnumsAndOptions
 GO
+-- Validate the directory specified in dbo.EnumsAndOptions.
+-- If the directory does not exist, raise a critical error and terminate the script.
+-- This ensures that the configured file path is correct before proceeding with further operations.
 If Not Exists
    (
    Select * 
    FROM 
-     Dbo.EnumsEtOpt as E 
+     Dbo.EnumsAndOptions as E 
      CROSS APPLY sys.dm_os_enumerate_filesystem(RootAboveDir, Dir) as F
    where is_directory=1
    ) 
 Begin
-  Declare @repFich sysname; Select @repFich = repfich from dbo.EnumsEtOpt
-  Raiserror ('Le répertoire configuré dans dbo.EnumsEtOpt %s n''existe pas, veuiller corriger et vous reconnecter', 20, 1, @repfich)
+  Declare @repFich sysname; Select @repFich = repfich from Dbo.EnumsAndOptions
+  Raiserror ('The directory configured in Dbo.EnumsAndOptions %s does not exist. Please correct it, close this session, and reconnect.', 20, 1, @repfich) With Log
 End 
 GO
 --------------------------------------------------------------------------------------------
--- Si une job existe, la supprimer le temps du remplacement des objets de code
+-- If a job exists, delete it temporarily to allow replacing the code objects
 --------------------------------------------------------------------------------------------
 DECLARE @ReturnCode INT = 0
 DECLARE @jobId BINARY(16)
 Declare @JobName sysName
-Select @jobname = 'AuditReq'
-Select @jobId = job_id From msdb.dbo.sysjobs where name =@JobName
+Select @jobname = 'FullQryAudit'
+Select @jobId = job_id From msdb.dbo.sysjobs where name = @JobName
 
 If @jobId IS NOT NULL
 Begin
-  EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=@JobName
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+  EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name = @JobName
+  IF (@ReturnCode <> 0) Raiserror ('Return code of %d from msdb.dbo.sp_delete_job ', 11, 1, @returnCode)
 
-  If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
+  If exists (Select * From msdb.dbo.sysjobschedules where job_id = @jobId)
   Begin
-    EXEC msdb.dbo.sp_detach_schedule @job_Name = @JobName, @schedule_name = N'AuditReqAutoRestart';
-    Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqAutoStart'
-    IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+    EXEC msdb.dbo.sp_detach_schedule @job_Name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
+    Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name = 'FullQryAuditAutoStart'
+    IF (@ReturnCode <> 0) Raiserror ('Return code of %d from msdb.dbo.sp_delete_schedule ', 11, 1, @returnCode)
   End
 End
 GO
 -- remove any code object from previous version, since all needed code objects are recreated
--- the logon trigger isn't replace here. And Dbo.EnumsEtOpt must be preserved
+-- the logon trigger isn't replaced here. And Dbo.EnumsAndOptions must be preserved
 Declare @Sql nvarchar(max) = ''
 Select @Sql=@Sql+Sql
 From
@@ -235,17 +298,19 @@ From
   CROSS JOIN (Select Dot='.', CrLf=Nchar(13)+nchar(10)) as const
   CROSS APPLY (Select QName=QUOTENAME(Object_schema_Name(object_id))+'.'+Quotename(name)) as QName
   CROSS APPLY (Select Sql='Drop '+T.ObjTyp+' IF Exists '+QName+CrLf) as Sql
-Where QName NOT IN ('[dbo].[EnumsEtOpt]','[dbo].[TemplateReplace]')
+Where QName NOT IN ('[dbo].[EnumsAndOptions]','[dbo].[TemplateReplace]', '[dbo].[Version]')
 Print @Sql  
 Exec (@Sql)
 GO
+-- this procedure sets from email config parameters contains in Dbo.EnumsAndOptions database mail
+-- profile and its account, and SQL Agent operator
 Create Or Alter Proc Dbo.EmailSetup
 As
 Begin
   Set nocount on
 
   -------------------------------------------------------------
-  --  database mail setup for AuditReq
+  --  database mail setup for FullQryAudit
   -------------------------------------------------------------
   If not Exists
      (
@@ -259,7 +324,7 @@ Begin
     Reconfigure
   End  
 
-  -- To enable the feature.
+  -- Add email configuration settings to the current setup if they are missing.
   If not Exists
      (
  		  Select *
@@ -282,13 +347,13 @@ Begin
   
 
   -- Set profil name here
-  SET @profile_name = 'AuditReq_EmailProfile';
+  SET @profile_name = 'FullQryAudit_EmailProfile';
 
-  SET @account_name = lower(replace(convert(sysname, Serverproperty('servername')), '\', '.'))+'.AuditReq'
+  SET @account_name = lower(replace(convert(sysname, Serverproperty('servername')), '\', '.'))+'.FullQryAudit'
 
   -- Init email account name
-  SET @email_address = lower(@account_name+'@AuditReq.com')
-  SET @display_name = lower(convert(sysname, Serverproperty('servername'))+' : AuditReq ')
+  SET @email_address = lower(@account_name+'@FullQryAudit.com')
+  SET @display_name = lower(convert(sysname, Serverproperty('servername'))+' : FullQryAudit ')
     
   -- if account exists remove it
   If Exists (Select * From msdb.dbo.sysmail_account WHERE name = @account_name )
@@ -346,7 +411,7 @@ Begin
   , @SmtpMailEnableSSL = E.enable_ssl
   , @EmailServerAccount = E.EmailUsername
   , @EmailServerPassword = E.EmailPassword
-  From Dbo.EnumsEtOpt as E
+  From Dbo.EnumsAndOptions as E
 
   -- Add the account
   Exec @rv = msdb.dbo.sysmail_add_account_sp
@@ -381,58 +446,174 @@ Begin
 
   COMMIT transaction;
   
-  Declare @oper sysname Set @oper = 'AuditReq_Operator'
+  Declare @oper sysname Set @oper = 'FullQryAudit_Operator'
   If exists(SELECT * FROM msdb.dbo.sysoperators Where name = @oper)
     Exec msdb.dbo.sp_delete_operator @name = @oper;
     
   Declare @email sysname
-  Select @email=E.EMailForAlert from Dbo.EnumsEtOpt as E
+  Select @email=E.EMailForAlert from Dbo.EnumsAndOptions as E
   Exec msdb.dbo.sp_add_operator @name = @oper, @email_address = @email
 
   EXEC  Msdb.dbo.sp_send_dbmail
-    @profile_name = 'AuditReq_EmailProfile'
+    @profile_name = 'FullQryAudit_EmailProfile'
   , @recipients = @email
   , @importance = 'High'
-  , @subject = 'AuditReq Email setup completed'
+  , @subject = 'FullQryAudit Email setup completed'
   , @body = 'Test email for Audit Email Setup'
   , @body_format = 'HTML'
 
 End -- dbo.EmailSetup
 GO
+-- run email setup
 Exec dbo.EmailSetup
 GO
-CREATE OR ALTER PROCEDURE dbo.SendEmail @msg NVARCHAR(MAX)
+Create or Alter Function dbo.ViewLastJobExec(@jobName sysname)
+Returns Table
+as
+Return
+Select R.Status, H.*
+From
+  (Select JobName='FullQryAudit') as Prm
+  CROSS APPLY
+  (
+  -- by ordering by DENSE_RANK for the given job_id by jobEndInstanceId Desc, prevJobEndInstanceId
+  -- all steps of the job that belong to the same job execution are going to receive the same sequence
+  -- Top 1 clause then limits results to the first of DENSE_RANK value returned
+  Select Top 1 
+    JobLimits.*
+  , JobOrderFromLast=DENSE_RANK() Over (Order by jobEndInstanceId Desc, prevJobEndInstanceId)
+  From
+    ( 
+    -- This query identifies last instance_id of the job, named here JobEndInstanceId
+    -- and the last instance_id of the previous job, named here prevJobEndInstanceId
+    Select 
+      job_id
+    , jobEndInstanceId
+    -- find the instanceId that marks the end of the previous job
+    , prevJobEndInstanceId=LAG(jobEndInstanceId, 1, 0) Over (Order by jobEndInstanceId)
+    From
+      ( -- identify job end dividers
+      select H.job_id, jobEndInstanceId=H.instance_id
+      from 
+        -- limit work to a single job by step_id=0 and name through the job parameter
+        (Select job_id, Step_Id=0 From Msdb.dbo.sysjobs as J where j.name = Prm.JobName) as J
+        -- find the instance_id that marks the end of the job, 
+        -- and only rows that marks the end of the job, not the other steps of jobs
+        join msdb.dbo.sysjobhistory as H
+        On H.job_id = J.job_id
+        And H.step_id=J.Step_Id
+      ) as jobEndInstanceId
+    ) as JobLimits
+  Order By JobOrderFromLast
+  ) as JobInOrderFromLast
+  -- Those two values will allow to group steps of a given job, and grab complete details
+  -- for each steps from sysjobhistory doing a range join
+  -- by H.instance_id <= jobEndInstanceId And H.instance_id > prevJobEndInstanceId
+  -- for this job_id
+  Join Msdb.dbo.sysjobhistory as H
+  ON  H.job_id = JobInOrderFromLast.job_id 
+  And H.instance_id <= JobInOrderFromLast.jobEndInstanceId 
+  And H.instance_id > JobInOrderFromLast.prevJobEndInstanceId
+
+  OUTER APPLY 
+  (
+  SELECT Status = 'Failed' WHERE run_status = 0     UNION ALL
+  SELECT Status = 'Succeeded' WHERE run_status = 1     UNION ALL
+  SELECT Status = 'Retry' WHERE run_status = 2    UNION ALL
+  SELECT Status = 'Canceled' WHERE run_status = 3    UNION ALL
+  SELECT Status = 'In Progress' WHERE run_status = 4
+  ) AS R
+GO
+Create or Alter View dbo.ShowLastJobStatus
+as
+Select Status, Msgs
+from 
+  (select crLf=NCHAR(13)+NCHAR(10)) as crlf
+  cross apply 
+  (
+  Select Status=Convert(nvarchar(20),null),Msgs = 'Status from previous FullQryAudit job execution ' Union all
+  Select Status, Msgs=Message+CrLf From FullQryAudit.dbo.ViewLastJobExec('FullQryAudit')
+  ) as Msgs
+GO
+-- Procedure to send an email using the Database Mail feature in SQL Server.
+-- Parameters:
+--   @msg: The body of the email.
+--   @Now: Determines the type of email to send (1 for an audit stop alert, 0 for a last execution report).
+CREATE OR ALTER PROCEDURE dbo.SendEmail @msg NVARCHAR(MAX), @Now Int = 1
 AS
 BEGIN
+  -- Declare variables for the email profile name and recipient address.
   Declare @profile_name SysName;
   Declare @email_address SysName;
-  Select @profile_name = 'AuditReq_EmailProfile', @email_address=E.EMailForAlert From AuditReq.dbo.EnumsEtOpt as E
 
+  -- Retrieve email profile and recipient address from the configuration table.
+  Select @profile_name = 'FullQryAudit_EmailProfile', @email_address = E.EMailForAlert 
+  From FullQryAudit.Dbo.EnumsAndOptions as E;
+
+  -- Declare a variable for dynamically generated SQL.
+  Declare @Sql Nvarchar(max);
+
+  -- Generate the email subject dynamically based on the @Now parameter.
+  Select @Sql = sql
+  From
+    (
+    -- Case: Audit stopped with an issue to investigate.
+    Select Subject = '"FullQryAudit: Audit stopped, problem to investigate in the audit of queries"'
+    Where @Now = 1
+    UNION ALL
+    -- Case: Report of the last execution of FullQryAudit.
+    Select Subject = '"FullQryAudit: Report of the last execution of FullQryAudit"'
+    Where @Now = 0
+    ) as Subject
+    CROSS JOIN
+    (
+    -- Template for the email to be sent using Database Mail.
+    Select 
+      t0 =
+      N'
+      EXEC  Msdb.dbo.sp_send_dbmail
+        @profile_name = @profile_name
+      , @recipients = @email_Address
+      , @importance = "High"
+      , @subject = #Subject#
+      , @body = @msg
+      , @body_format = "HTML"
+      '
+    ) as t0
+    -- Replace the placeholder in the template with the actual subject.
+    CROSS APPLY (Select t1 = REPLACE(t0, '#Subject#', subject)) as t1
+    -- Replace double quotes in the template with single quotes for SQL compatibility.
+    CROSS APPLY (Select Sql = REPLACE(t1, '"', '''')) as Sql;
+
+  -- Execute the dynamically generated SQL to send the email.
   Exec dbo.sp_executeSql
-    N'
-    EXEC  Msdb.dbo.sp_send_dbmail
-      @profile_name = @profile_name
-    , @recipients = @email_Address
-    , @importance = ''High''
-    , @subject = ''AuditReq : Audit stoppé, problème à investiguer dans l''''audit des requêtes''
-    , @body = @msg
-    , @body_format = ''HTML''
-    '
+    @Sql
   , N'@profile_name sysname, @email_Address sysname, @msg NVARCHAR(MAX)'
   , @profile_Name
   , @Email_address
-  , @Msg
+  , @Msg;
 END
 GO
+-- Function to format runtime error messages based on a custom template or default template.
+-- Parameters:
+--   @MsgTemplate: The custom error message template (if NULL, uses the default template from EnumsAndOptions).
+--   @error_number: The error number of the runtime error.
+--   @error_severity: The severity level of the error.
+--   @error_state: The state code of the error.
+--   @error_line: The line number where the error occurred.
+--   @error_procedure: The name of the stored procedure or function in which the error occurred.
+--   @error_message: The text description of the error.
+-- Returns:
+--   A table with the formatted error message based on the provided inputs and the error message template.
 Create Or Alter Function dbo.FormatRunTimeMsg 
 (
-  @MsgTemplate Nvarchar(max)
-, @error_number Int 
-, @error_severity Int 
-, @error_state int
-, @error_line Int 
-, @error_procedure nvarchar(128)
-, @error_message nvarchar(4000)
+  @MsgTemplate Nvarchar(max), -- Custom template for error message formatting.
+  @error_number Int, -- Error number from the SQL Server error context.
+  @error_severity Int, -- Severity level of the error.
+  @error_state int, -- Error state code.
+  @error_line Int, -- Line number where the error occurred.
+  @error_procedure nvarchar(128), -- Name of the module where the error occurred.
+  @error_message nvarchar(4000) -- Error message text.
 )
 Returns Table
 as 
@@ -440,22 +621,32 @@ Return
 (
 Select *
 From 
-  (Select ErrorMsgFormatTemplate=ISNULL(@MsgTemplate, E.ErrMsgTemplate) From dbo.EnumsEtOpt as E) as MsgTemplate
+  -- Retrieve the error message template from the configuration table or use the provided one.
+  (Select ErrorMsgFormatTemplate=ISNULL(@MsgTemplate, E.ErrMsgTemplate) From Dbo.EnumsAndOptions as E) as MsgTemplate
+  -- Populate the runtime error details.
   CROSS APPLY (Select ErrMessage=@error_message) as ErrMessage
-  CROSS APPLY (SeLect ErrNumber=@error_number) as ErrNumber
-  CROSS APPLY (SeLect ErrSeverity=@error_severity) as ErrSeverity
-  CROSS APPLY (SeLect ErrState=@error_state) as ErrState
-  CROSS APPLY (SeLect ErrLine=@error_line) as ErrLine
-  CROSS APPLY (SeLect ErrProcedure=@error_procedure) as vStdErrProcedure
-  Cross Apply (Select FmtErrMsg0=Replace(ErrorMsgFormatTemplate, '#ErrMessage#', ErrMessage) ) as FmtStdErrMsg0
-  Cross Apply (Select FmtErrMsg1=Replace(FmtErrMsg0, '#ErrNumber#', CAST(ErrNumber as nvarchar)) ) as FmtErrMsg1
-  Cross Apply (Select FmtErrMsg2=Replace(FmtErrMsg1, '#ErrSeverity#', CAST(ErrSeverity as nvarchar)) ) as FmtErrMsg2
-  Cross Apply (Select FmtErrMsg3=Replace(FmtErrMsg2, '#ErrState#', CAST(ErrState as nvarchar)) ) as FmtErrMsg3
-  Cross Apply (Select AtPos0=ISNULL(' at Line:'+CAST(ErrLine as nvarchar), '') ) as vAtPos0
-  Cross Apply (Select AtPos=atPos0+ISNULL(' in Sql Module:'+ErrProcedure,'')) as atPos
-  Cross Apply (Select ErrMsg=Replace(FmtErrMsg3, '#atPos#', atPos) ) as FmtErrMsg
+  CROSS APPLY (Select ErrNumber=@error_number) as ErrNumber
+  CROSS APPLY (Select ErrSeverity=@error_severity) as ErrSeverity
+  CROSS APPLY (Select ErrState=@error_state) as ErrState
+  CROSS APPLY (Select ErrLine=@error_line) as ErrLine
+  CROSS APPLY (Select ErrProcedure=@error_procedure) as vStdErrProcedure
+  -- Replace placeholders in the template with actual error details.
+  CROSS APPLY (Select FmtErrMsg0=Replace(ErrorMsgFormatTemplate, '#ErrMessage#', ErrMessage) ) as FmtStdErrMsg0
+  CROSS APPLY (Select FmtErrMsg1=Replace(FmtErrMsg0, '#ErrNumber#', CAST(ErrNumber as nvarchar)) ) as FmtErrMsg1
+  CROSS APPLY (Select FmtErrMsg2=Replace(FmtErrMsg1, '#ErrSeverity#', CAST(ErrSeverity as nvarchar)) ) as FmtErrMsg2
+  CROSS APPLY (Select FmtErrMsg3=Replace(FmtErrMsg2, '#ErrState#', CAST(ErrState as nvarchar)) ) as FmtErrMsg3
+  CROSS APPLY (Select AtPos0=ISNULL(' at Line:'+CAST(ErrLine as nvarchar), '') ) as vAtPos0
+  CROSS APPLY (Select AtPos=AtPos0+ISNULL(' in Sql Module:'+ErrProcedure,'')) as AtPos
+  CROSS APPLY (Select ErrMsg=Replace(FmtErrMsg3, '#atPos#', AtPos) ) as FmtErrMsg
 )
 GO
+
+-- Function to generate a formatted error message for the most recent runtime error using the current error context.
+-- Parameters:
+--   @MsgTemplate: The custom error message template (if NULL, uses the default template).
+-- Returns:
+--   A table containing the formatted error message using the latest error context (ERROR_* functions).
+-- This function is the one mostly typically used for default error messaging
 CREATE OR ALTER FUNCTION dbo.FormatCurrentMsg (@MsgTemplate nvarchar(4000))
 Returns table
 as 
@@ -463,69 +654,41 @@ Return
   Select * 
   From 
   dbo.FormatRunTimeMsg 
-  (  @MsgTemplate
-  , ERROR_NUMBER ()
-  , ERROR_SEVERITY()
-  , ERROR_STATE()
-  , ERROR_LINE()
-  , ERROR_PROCEDURE ()
-  , ERROR_MESSAGE ()
+  (
+    @MsgTemplate, -- Custom template for error message formatting.
+    ERROR_NUMBER(), -- Number of the last error that occurred in the session.
+    ERROR_SEVERITY(), -- Severity of the last error.
+    ERROR_STATE(), -- State code of the last error.
+    ERROR_LINE(), -- Line number of the last error.
+    ERROR_PROCEDURE(), -- Procedure or function where the last error occurred.
+    ERROR_MESSAGE() -- Text message of the last error.
   ) as Fmt
 GO
-Use AuditReq
-DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
-IF USER_ID('AuditReqUser') IS NOT NULL DROP USER AuditReqUser;
-go
-IF SUSER_SID('AuditReqUser') IS NOT NULL DROP LOGIN AuditReqUser;
-go
-USE MASTER
-declare @unknownPwd nvarchar(100) = convert(nvarchar(400), HASHBYTES('SHA1', convert(nvarchar(100),newid())), 2)
-Exec
-(
-'
-create login AuditReqUser 
-With Password = '''+@unknownPwd+'''
-   , DEFAULT_DATABASE = AuditReq, DEFAULT_LANGUAGE=US_ENGLISH
-   , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF
-'
-)
-GRANT VIEW SERVER STATE TO [AuditReqUser];
-GRANT ALTER TRACE TO [AuditReqUser];
-Go
-Use AuditReq;
-CREATE USER AuditReqUser For Login AuditReqUser;
+DROP TRIGGER IF EXISTS LogonFullQryAuditTrigger ON ALL SERVER;
+-- Check if the database user 'FullQryAuditUser' exists in the current database, and if so, drop it.
+IF USER_ID('FullQryAuditUser') IS NOT NULL 
+    DROP USER FullQryAuditUser;
 GO
-GRANT SELECT ON dbo.FormatCurrentMsg TO AuditReqUser; -- Utiles pour former msg erreur
+IF SUSER_SID('FullQryAuditUser') IS NOT NULL 
+    DROP LOGIN FullQryAuditUser;
 GO
-GRANT SELECT ON dbo.EnumsEtOpt TO AuditReqUser; -- Utiles pour former msg erreur
-GO
--- login trigger to keep track of logins, and extended session running at logon (by its create time)
-CREATE or Alter TRIGGER LogonAuditReqTrigger 
-ON ALL SERVER WITH EXECUTE AS 'AuditReqUser'
+-----------------------------------------------------------------------------------------------------------------
+-- Logon trigger to capture login details such as login name, client network address, and application name.
+-- This information is sent as a custom event to the FullQryAudit Extended Event session, ensuring both login events
+-- and query activities are logged in a synchronized and sequential manner.
+-----------------------------------------------------------------------------------------------------------------
+CREATE or Alter TRIGGER LogonFullQryAuditTrigger 
+ON ALL SERVER 
 FOR LOGON
 AS
 BEGIN
-  -- By experience avoid at all costs direct reference to EXTERNAL USER OBJECTS in this trigger
-  -- if they are missing, they cause error, and this type of error means locking out everybody
-  -- from login. It is possible to refer to external user objects through dynamic execution
-  -- which allow to catch error.
-  
+  -- I take care to avoid reference to external user defined objects and limits
+  -- at most references to all objects
   DECLARE @JEventDataBinary Varbinary(8000);
   Begin Try
     Select @JEventDataBinary = JEventDataBinary
     From 
-      (
-      Select 
-        EventData=EVENTDATA() -- has nothing to do with tables below
-      , ExtendedSessionCreateTime
-      From 
-        (
-        -- if session isn't alive no data is produced
-        select ExtendedSessionCreateTime=create_time -- to make unique event_sequence by session
-        From Sys.dm_xe_sessions 
-        Where name = 'AuditReq'
-        ) as ExSess
-      ) as EvD
+      (Select EventData=EVENTDATA()) as EventData
       CROSS APPLY (Select Spid=EventData.value('(/EVENT_INSTANCE/SPID)[1]', 'INT')) as Evi
       CROSS APPLY (Select client_net_address=EventData.value('(/EVENT_INSTANCE/ClientHost)[1]', 'NVARCHAR(30)')) as A
       LEFT JOIN (select * from master.sys.dm_exec_sessions) as S 
@@ -541,11 +704,12 @@ BEGIN
         , Evi.spid 
         , A.client_net_address
         , client_app_name = S.program_name 
-        , EVd.ExtendedSessionCreateTime 
         For Json PATH
         )
       ) as JEventData
       CROSS APPLY (Select JEventDataBinary=CAST(JEventData as Varbinary(8000))) as JEventDataBinary
+      -- cancel any output if session isn't active yet
+      CROSS APPLY (Select XESessionIsThere=1 Where Exists (Select * From sys.dm_xe_sessions Where Name = N'FullQryAudit')) as XESessionIsThere
 
     -- Event ID (must be between 82 and 91), don't send events if event session isn't started.
     -- see comment above : if session isn't alive no data is produced, so here @@rowcount is 0
@@ -557,11 +721,11 @@ BEGIN
     -- en état d'erreur on ne peut écrire dans aucune table, car la transaction va s'annuler quand même
     -- le mieux qu'on peut faire est de formatter l'erreur qui est redirigée dans le log de SQL Server
     Declare @msg nvarchar(4000) 
-    Select @msg = 'Error in Logon trigger: LogonAuditReqTrigger'+nchar(10)+ErrMsg 
+    Select @msg = 'Error in Logon trigger: LogonFullQryAuditTrigger'+nchar(10)+ErrMsg 
     From
       (Select ErrorMsgFormatTemplate=
 '----------------------------------------------------------------------------------
-Error in Logon trigger: LogonAuditReqTrigger
+Error in Logon trigger: LogonFullQryAuditTrigger
 Msg: #ErrMessage#
 Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
 -----------------------------------------------------------------------------------') 
@@ -580,130 +744,108 @@ Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
       Cross Apply (Select AtPos=atPos0+ISNULL(' in Sql Module:'+ErrProcedure,'')) as atPos
       Cross Apply (Select ErrMsg=Replace(FmtErrMsg3, '#atPos#', atPos) ) as FmtErrMsg
     Print @Msg
-    Exec ('DISABLE TRIGGER LogonAuditReqTrigger ON ALL Server')
-    --Exec dbo.SendEmail @Msg='AuditReq: Logon trigger detected an error during execution and has automatically disabled itself.'
+    Exec ('DISABLE TRIGGER LogonFullQryAuditTrigger ON ALL Server')
+    --Exec dbo.SendEmail @Msg='FullQryAudit: Logon trigger detected an error during execution and has automatically disabled itself.'
   End Catch
 END;
 GO
+----------------------------------------------------------------------------------------
+-- Perform 
+
 Declare @Sql nvarchar(max)
-Select @Sql=[Stop] From dbo.EnumsEtOpt
+Select @Sql=[StopExtendedSession] From Dbo.EnumsAndOptions
 Print @Sql
 Exec (@Sql)
 
-Select @Sql=[Drop] From dbo.EnumsEtOpt
+Select @Sql=[DropExtendedSession] From Dbo.EnumsAndOptions
 Print @Sql
 Exec (@Sql)
 
-Select @Sql=[Create] From dbo.EnumsEtOpt
+Select @Sql=[CreateExtendedSession] From Dbo.EnumsAndOptions
 Print @Sql
 Exec (@Sql)
 
-Select @Sql=[Start] From dbo.EnumsEtOpt
+Select @Sql=[StartExtendedSession] From Dbo.EnumsAndOptions
 Print @Sql
 Exec (@Sql)
 go
-USE AuditReq
+USE FullQryAudit
 GO
--- remove obsolete object
-If Object_id('dbo.SeqExtraction') IS NOT NULL Drop Sequence dbo.SeqExtraction
-GO
--- obsolete data to remove from previous versions
-Drop table if exists dbo.EvenementsTraites
--- obsolete data to remove from previous versions
-
--- upgrade To 2.50, after upgrade remove this code since only one customer use it
-If INDEXPROPERTY(Object_id('dbo.EvenementsTraitesSuivi'), 'iPasseFileName', 'isClustered') IS NOT NULL
-  Drop Index iPasseFileName On dbo.EvenementsTraitesSuivi
-If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'NbTotalFich') IS NOT NULL 
-  ALTER Table dbo.EvenementsTraitesSuivi Drop Column NbTotalFich
-If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'Passe') IS NOT NULL 
-  ALTER Table dbo.EvenementsTraitesSuivi Drop Column Passe
-If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'File_Seq') IS NOT NULL 
-  ALTER Table dbo.EvenementsTraitesSuivi Drop Column File_Seq
---default values for something only managed from version 2.5
-If COL_LENGTH ('dbo.EvenementsTraitesSuivi', 'ExtEvSessCreateTime') IS NULL And OBJECT_ID('dbo.EvenementsTraitesSuivi') IS NOT NULL
-Begin
-  ALTER Table dbo.EvenementsTraitesSuivi Add ExtEvSessCreateTime Datetime Not NULL Default '20000101'
-End 
 -- -----------------------------------------------------------------------------------------------
--- On se base sur le Event_sequence des traces pour savoir si une session a été redémarrée.
--- Le event_sequence d'un fichier croît toujours, car cela vient d'une extended session active.
--- Au Shutdown du serveur, il y a un flush d'évènements au fichier courant, donc on devra
--- continuer à le lire, car on n'a pu le lire en entier.
+-- Use the trace's event_sequence to determine if a session has been restarted.
+-- The event_sequence within a file always increases for an active extended session.
+-- During server shutdown, events are flushed to the current file, so processing should continue
+-- to ensure no events are missed.
 
--- La table dbo.EvenementsTraitesSuivi nous permet de faire ce premier suivi.
+-- The dbo.ExtEvProcessedChkPoint table is used for this tracking.
 
--- Après redémarrage, si extended session est auto-restart, ou si elle est démarrée manuellement
--- un nouveau fichier est crée est l'Event_Sequence redémarre à 1.
--- Donc si le premier résultat retourné a un event_sequence à 1, on peut incrémenter le ExtEvSessSeq et ajuster
--- ExtEvSessCreateTime à la date de création de la session.
+-- After a restart, if the FullQryAudit extended session is auto-restarted or manually started,
+-- a new file is created, and event_sequence restarts at 1.
 --
--- ExtEvSessSeq sert à distinguer les event_Sequence de deux sessions différentes.
--- Cela a son importance pour la gestion des sessions périmées, car event_sequence peut redémarrer à 1 dans le temps
+-- When processing this new file, the first event (event_sequence = 1) indicates the session's start
+-- and can be used to derive a distinctive reference timestamp (event_time) for the session.
+
+-- The FirstEventTimeOfSession column distinguishes event_sequences from different sessions.
+-- This is crucial for managing expired sessions because event_sequence restarts at 1 
+-- when extended session restarts.
 -- ----------------------------------------------------------------------------------------------------
-If Object_id('dbo.EvenementsTraitesSuivi') IS NULL
+
+If Object_id('dbo.ExtEvProcessedChkPoint') IS NULL
 Begin
-  Create table dbo.EvenementsTraitesSuivi
+  Create table dbo.ExtEvProcessedChkPoint
   (
-    file_name nvarchar(260) 
-  , last_Offset_done bigint 
-  , dateSuivi Datetime2 Default SYSDATETIME()
-  , ExtEvSessCreateTime Datetime NULL
-  )
-  create index iDateSuivi on dbo.EvenementsTraitesSuivi(dateSuivi)
-End
-If INDEXPROPERTY(Object_id('dbo.EvenementsTraitesSuivi'), 'iDateSuivi', 'isClustered') IS NULL
-  create index iDateSuivi on dbo.EvenementsTraitesSuivi (dateSuivi Desc) 
+    file_name nvarchar(260),
+    last_Offset_done bigint,
+    ChkPointTime Datetime2 Default SYSDATETIME(),
+    FirstEventTimeOfSession Datetime NULL
+  );
+  create index iChkPointTime on dbo.ExtEvProcessedChkPoint(ChkPointTime);
+End;
 
--- cette table permet de conserver les connexions 
+-- Ensure an index exists for sorting by 'iChkPointTime' in descending order.
+If INDEXPROPERTY(Object_id('dbo.ExtEvProcessedChkPoint'), 'iChkPointTime', 'isClustered') IS NULL
+  create index iChkPointTime on dbo.ExtEvProcessedChkPoint (ChkPointTime Desc);
 
-If COL_LENGTH ('dbo.HistoriqueConnexions', 'ExtendedSessionCreateTime') IS NULL 
-  And OBJECT_ID('dbo.HistoriqueConnexions') IS NOT NULL
+-- The Dbo.ConnectionsHistory table stores historical connection data.
+-- It captures details such as login names, session IDs, login times, client network addresses, 
+-- application names, and the first event time of the extended session.
+-- This table helps to correlate login events information with query execution events during auditing.
+-- to add them to the final audit table that contains each query and the login information supplied by
+-- usr events raised by the login trigger
+-- 
+
+If Object_Id('Dbo.ConnectionsHistory') IS NULL
 Begin
-  ALTER Table dbo.HistoriqueConnexions Add ExtendedSessionCreateTime Datetime
-  -- the trace is already running
-  Exec
-  (
-  '
-  Update dbo.HistoriqueConnexions 
-  Set ExtendedSessionCreateTime=Create_time
-  From (Select create_time From Sys.dm_xe_sessions where name = ''AuditReq'') as tx
-  '
-  )
-End 
-
-If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'PK_HistoriqueConnexions', 'IsClustered') IS NOT NULL
-  Alter table dbo.HistoriqueConnexions Drop constraint PK_HistoriqueConnexions
-
-If Object_Id('dbo.HistoriqueConnexions') IS NULL
-Begin
-  CREATE TABLE dbo.HistoriqueConnexions
+  CREATE TABLE Dbo.ConnectionsHistory
   (
 	   LoginName nvarchar(256) NOT NULL
   , Session_id smallint NOT NULL
   , LoginTime datetime2(7)  NOT NULL
   , Client_net_address nvarchar(48) NULL
   , client_app_name sysname
-  , ExtendedSessionCreateTime Datetime Not NULL 
+  , FirstEventTimeOfSession Datetime Not NULL 
   , event_sequence BigInt Not NULL
   ) 
 End
-If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'iHistoriqueConnexions', 'IsClustered') IS NULL
-  Create clustered index iHistoriqueConnexions 
-  On dbo.HistoriqueConnexions (Session_id, ExtendedSessionCreateTime desc, Event_Sequence Desc, loginTime)
-If INDEXPROPERTY(object_id('dbo.HistoriqueConnexions'), 'iExtendedSession', 'IsClustered') IS NULL
-  Create index iExtendedSession
-  On dbo.HistoriqueConnexions (ExtendedSessionCreateTime desc)
 GO
 
--- Add column version 2.6.3 -- valid from version 2.6.2
-If COL_LENGTH ('dbo.AuditComplet', 'DurMicroSec') IS NULL 
-  And OBJECT_ID('dbo.AuditComplet') IS NOT NULL
-  ALTER Table dbo.AuditComplet Add DurMicroSec BigInt
-  
-If Object_id('dbo.AuditComplet') IS NULL
+If INDEXPROPERTY(object_id('Dbo.ConnectionsHistory'), 'iConnectionsHistory', 'IsClustered') IS NULL
+  Create clustered index iConnectionsHistory 
+  On Dbo.ConnectionsHistory (Session_id, FirstEventTimeOfSession desc, Event_Sequence Desc, loginTime)
+
+If INDEXPROPERTY(object_id('Dbo.ConnectionsHistory'), 'iFirstEventTimeOfSession', 'IsClustered') IS NULL
+  Create index iFirstEventTimeOfSession
+  On Dbo.ConnectionsHistory (FirstEventTimeOfSession desc)
+GO
+
+--------------------------------------------------------------------------------------------
+-- This table is the final result of this script
+-- it matches client_net_address and client_app_name with queries
+-- plus some extra performance stats about queries
+--------------------------------------------------------------------------------------------
+If Object_id('dbo.FullAudit') IS NULL
 Begin
-  CREATE TABLE dbo.AuditComplet
+  CREATE TABLE dbo.FullAudit
   (
     server_principal_name varchar(50) NULL
   , event_time datetimeoffset(7) NULL
@@ -716,30 +858,40 @@ Begin
   , statement nvarchar(max) NULL
   -- cette colonne combinée à event_sequence garantit une clé unique pour l'ordre des evènements 
   -- car event_sequence est remis à zéro lors du rédémarrage d'une session de trace.
-  , ExtendedSessionCreateTime DateTime
+  , FirstEventTimeOfSession DateTime
   , event_sequence BigInt 
   , DurMicroSec BigInt NULL
+  , cpu_time Int NULL
+  , logical_reads Int NULL
+  , writes Int NULL
+  , row_count Int NULL 
+  , physical_reads Int NULL
   ) 
 End
-If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iSeqEvents', 'IsUnique') IS NULL
-  Create Index iSeqEvents On dbo.AuditComplet (event_time, ExtendedSessionCreateTime, Event_Sequence)
 
-If INDEXPROPERTY(object_id('dbo.AuditComplet'), 'iUserTime', 'IsUnique') IS NULL
-  Create Index iUserTime On dbo.AuditComplet (server_principal_name, event_time)
+If INDEXPROPERTY(object_id('dbo.FullAudit'), 'iSeqEvents', 'IsUnique') IS NULL
+  Create Index iSeqEvents On dbo.FullAudit (event_time, FirstEventTimeOfSession, Event_Sequence)
 
-If Object_id('dbo.LogTraitementAudit') IS NULL
+If INDEXPROPERTY(object_id('dbo.FullAudit'), 'iUserTime', 'IsUnique') IS NULL
+  Create Index iUserTime On dbo.FullAudit (server_principal_name, event_time)
+GO
+-------------------------------------------------------------------
+-- this table logs operation and error messages in the database
+--------------------------------------------------------------------
+
+If Object_id('dbo.ProcessAuditLog') IS NULL
 Begin
-  CREATE TABLE dbo.LogTraitementAudit
+  CREATE TABLE dbo.ProcessAuditLog
   (
     MsgDate datetime2 default SYSDATETIME()
   , Msg nvarchar(max) NULL
   ) 
-  create index iMsgDate on dbo.LogTraitementAudit(MsgDate)
+  create index iMsgDate on dbo.ProcessAuditLog(MsgDate)
 End
 GO
---
--- Selon edition aller chercher meilleur option de compression
--- Compresser seulement les tables du schema .dbo
+-- 
+-- Depending on the edition, select the best compression option.
+-- Compress only the tables in the schema .dbo
 -- 
 Set Nocount on
 Declare @Sql nvarchar(max)=''
@@ -785,10 +937,10 @@ Print @Sql
 Exec (@Sql)
 GO
 -- --------------------------------------------------------------------------------
--- Cette fonction retourne l'information sur un fichier s'il existe
--- dont les parties de son nom
+-- This function returns information about a file if it exists,
+-- including its name components.
 -- --------------------------------------------------------------------------------
-USE AuditReq
+USE FullQryAudit
 GO
 Create Or Alter Function dbo.FileInfo (@fullPathAndName sysname)
 Returns Table
@@ -800,21 +952,40 @@ Return
     CROSS APPLY (Select posBS=len(fullPathAndName)-CHARINDEX('\', Reverse(fullPathAndName))+1) as PosBS
     CROSS APPLY (Select FileNamePlain=STUFF(fullPathAndName, 1, posBs, '')) as FileNamePlain
     CROSS APPLY (Select Directory=Substring(fullPathAndName, 1, posBs)) as Directory
-    OUTER APPLY (Select * From sys.dm_os_enumerate_filesystem(Directory, FileNamePlain)) as Info
+    OUTER APPLY (Select * From sys.dm_os_enumerate_filesystem(Directory, FileNamePlain) Where fullPathAndName IS NOT NULL) as Info
     OUTER APPLY (Select Existing=1 Where Info.full_filesystem_path IS NOT NULL) as Existing
--- Select * From dbo.FileInfo ('D:\_Tmp\AuditReq\AuditReq_0_133728749432040000.Xel')
+-- Select * From dbo.FileInfo ('D:\_Tmp\FullQryAudit\FullQryAudit_0_133728749432040000.Xel')
 GO
--- --------------------------------------------------------------------------------
--- Cette fonction indique quel est le premier fichier qui n'est plus le dernier 
--- --------------------------------------------------------------------------------
-Create Or Alter Function dbo.FichierLiberable ()
+Create or Alter Function Dbo.GetCurrentTargetFile (@SessionName Sysname)
 Returns Table
 as
 Return
+  -- Returns the current file of the target, to avoid removal before time
+  SELECT 
+    SessionName=s.name 
+  , TargetName=t.target_name
+  , FileName
+  FROM 
+    sys.dm_xe_sessions AS s
+    JOIN
+    sys.dm_xe_session_targets AS t
+    ON   s.address = t.event_session_address 
+     And t.target_name = 'event_file'
+    CROSS APPLY (Select TgData=CAST(t.target_data AS XML) ) as TgData
+    CROSS APPLY (Select FileName=TgData.value('(EventFileTarget/File/@name)[1]', 'NVARCHAR(MAX)')) AS FileName
+  Where FileName Like '%'+@sessionName+'%'
+GO
+Create Or Alter Function dbo.FileCanBeDisposed ()
+Returns Table
+as
+Return
+  -- --------------------------------------------------------------------------------
+  -- This function identifies the first file that is no longer the most recent.
+  -- This is required to consider it safely disposable. 
   --
-  -- Cette fonction retourne le fichier qui est le premier que s'il existe d'autres fichiers de trace après
-  -- car on ne supprime jamais le dernier fichier de trace
-  --
+  -- This function returns the file that is the first one only if there are
+  -- other trace files after it, because the last trace file is never deleted.
+  -- --------------------------------------------------------------------------------
   Select full_filesystem_path, Ordre, nbfich 
   From
     (
@@ -823,26 +994,27 @@ Return
     , ordre=row_number() Over (order by Dir.full_filesystem_path)
     , nbFich=count(*) Over (Partition By NULL)
     FROM 
-      dbo.EnumsEtOpt as Opt
-      CROSS APPLY sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, MatchFichTrc) as Dir -- attention recursion possible!
+      Dbo.EnumsAndOptions as Opt
+      CROSS APPLY sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, MatchFichTrc) as Dir -- take care of possible recursion!
     Where 
-      Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+      Dir.full_filesystem_path Like RepFichTrc+'FullQryAudit[_][0-9]%' -- remove recursion results if it happens
     ) as FichierEnOrdre
-  Where Ordre=1 And nbFich>1 -- retourne ce premier fichier seulement s'il y en a d'autres
+  Where Ordre=1 And nbFich>1 -- if the first file is followed by other, return it.
 GO
---------------------------------------------------------------------------------------------------------------
---
--- Cette fonction qui était un morceau de code intégral de la procedure dbo.CompleterAudit
--- a été isolé de la requête qui insère dans #Tmp afin de s'en servir aussi comme moyen de 
--- faire de l'examen des évènements enregistrés sans perturber l'état du traitement en cours
--- Les paramètres sont utiisés seulement lorsque on veut explorer les évènements pour faire des tests,
--- sinon la fonction suit continue à partir des derniers évènements de dbo.EvenementsTraitesSuivi 
--- 
---------------------------------------------------------------------------------------------------------------
 Create Or Alter Function dbo.GetNextEvents (@fileName Nvarchar(256), @lastOffsetDone BigInt)
 Returns Table
 as
 Return
+  --------------------------------------------------------------------------------------------------------------
+  --
+  -- This function, originally part of the dbo.CompleteQueryAuditWithConnectionInfo procedure,
+  -- was extracted from the query inserting into #Tmp to be reused as a tool
+  -- for examining recorded events without disrupting the current processing state.
+  -- The parameters are only used when exploring events for testing purposes;
+  -- otherwise, the function continues from the latest events in dbo.ExtEvProcessedChkPoint.
+  --
+  --------------------------------------------------------------------------------------------------------------
+
   Select 
     ev.file_name
   , ev.file_Offset
@@ -851,109 +1023,125 @@ Return
   , Ev.Event_time
   , ev.event_data
   from
-    (Select *, pFileName=@fileName, pLastOffsetDone=@lastOffsetDone From dbo.EnumsEtOpt) AS opt
+    (Select *, pFileName=@fileName, pLastOffsetDone=@lastOffsetDone From Dbo.EnumsAndOptions) AS opt
     OUTER APPLY
     (
-    -- on est chanceux que sys.fn_xe_file_target_read_file donne les évènements en ordre avec les Offset
-    -- on a vérifié par des tests que lorsqu'un les evènements d'offset sont lu, il ne s'y en ajoute plus
-    -- cet Outer Apply me confirme si oui on non on trouve encore quelque chose à lire dans le fichier
-    -- donc qu'après le dernier offset, on a trouvé un nouvel offset.
-    Select E.file_name, DernierOffsetConfirme=E.last_Offset_done
+    -- We are fortunate that sys.fn_xe_file_target_read_file provides events in order by their Offset.
+    -- Tests confirmed that once events with an offset are read, no new events are added to that offset.
+    -- This OUTER APPLY confirms whether there is still something to read in the file,
+    -- meaning whether a new offset is found after the last offset.
+    Select E.file_name, LastOffsetDone=E.last_Offset_done
     From 
       (
-      Select Top 1 File_Name, last_Offset_done From dbo.EvenementsTraitesSuivi Where pfileName Is NULL Order by dateSuivi desc
+      Select Top 1 File_Name, last_Offset_done From dbo.ExtEvProcessedChkPoint Where pfileName Is NULL Order by ChkPointTime desc
       UNION ALL
       Select File_Name=pfileName, last_Offset_done=plastOffsetDone Where pfileName IS NOT NULL
       ) As E 
       CROSS APPLY (Select * From dbo.FileInfo(E.file_name) Where Existing=1) as Existing -- file must exists
-      -- limite à une rangée, parce qu'on veut juste confirmer existance du fichier et offset
+      -- Limit to a single row, as we only want to confirm the existence of the file and its offset.
       cross apply (Select top 1 * From sys.fn_xe_file_target_read_file(E.file_name, NULL, E.file_name, E.last_Offset_done)) as F -- otherwise the is an error here
-    ) as SuiteMemeFich
+    ) as SameFileFollowUp 
     CROSS APPLY
     ( 
-    -- cet UNION ALL fait faire un switch de valeurs retournées
-    -- la première requête retourne le fichier existant avec le dernier offset
-    --    si on trouve un nouvel offset dans le dernier fichier lu
-    -- la seconde partie retourne le prochain fichier
-    --    a condition qu'il y ait un prochain fichier et que le dernier fichier lu (outer apply) 
-    --    n'a rien retourné. 
+    -- This UNION ALL performs a switch of returned values:
+    -- The first query returns the existing file with the latest offset
+    --     if a new offset is found in the last file read.
+    -- The second query returns the next file
+    --     provided there is a next file and the last file read (outer apply)
+    --     returned nothing.
 
-    -- Si les deux requête de l'union ne retournent rien, le cross apply (alias startP) qui 
-    -- l'englobe ne retourne rien, et rien ne sera inséré dans #Tmp
+    -- If both queries in the union return nothing, the CROSS APPLY (alias startP)
+    --     that wraps them returns nothing, and nothing will be inserted into #Tmp.
 
-    Select -- si nouvel offset existe après
-      SuiteMemeFich.file_name
-    , FilenamePourOffset=SuiteMemeFich.file_name 
-    , SuiteMemeFich.DernierOffsetConfirme -- NULL fera la job
-    Where SuiteMemeFich.file_name is NOT NULL
+    Select -- if some data exists in the same file after the offset tested
+      SameFileFollowUp .file_name
+    , FileNameForOffsetOnly=SameFileFollowUp .file_name 
+    , SameFileFollowUp .LastOffsetDone -- NULL fera la job
+    Where SameFileFollowUp .file_name is NOT NULL
 
     UNION ALL 
-    Select Suivant.file_name, FilenamePourOffset=NULL, DernierOffsetConfirme=NULL
+    Select NextF.file_name, FileNameForOffsetOnly=NULL, LastOffsetDone=NULL
     From
-      -- S'il n'y a plus rien de trouvé dans le fichier precedent, sinon arrêt de la requête
-      (Select FichierAvantTermine=1 Where SuiteMemeFich.file_name is NULL) as FichierAvantTermine 
+      -- Nothing more must be found from the previous file, otherwise this query stops
+      (Select FichierAvantTermine=1 Where SameFileFollowUp.file_name is NULL) as FichierAvantTermine 
       CROSS JOIN
-      ( -- prochain fichier du répertoire qui suit le dernier traité sinon le tout premier si jamais rien traité
+      ( -- The next file in the directory after the last processed one, or the very first file if none have been processed yet.
       Select top 1 File_Name=Dir.full_filesystem_path 
       FROM 
         ( 
-        -- si il n'y a pas de dernier fichier dans dbo.EvenementsTraites (comme quand la procédure part)
-        -- on part au début de la liste de fichiers.
-        Select file_name='' Where Not exists (Select * From dbo.EvenementsTraitesSuivi) -- point de départ si rien traité
+        -- If there is no last file in dbo.EvenementsTraites (e.g., when the procedure starts),
+        -- begin processing from the start of the file list.
+        Select file_name='' Where Not exists (Select * From dbo.ExtEvProcessedChkPoint) -- point de départ si rien traité
         UNION ALL
-        -- s'il y a quelque chose, on prend le dernier pour trouver plus loin ce qui suit sur disque
-        Select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc 
+        -- If a file exists in in dbo.EvenementsTraites, take the latest one to find the next file on disk.
+        Select top 1 file_name From dbo.ExtEvProcessedChkPoint Order by ChkPointTime desc 
         ) as ET
-        -- Obtenir les fichiers qui suivent, attention! sys.dm_os_enumerate_filesystem peut récurser dans un sous-répertoire
-        -- par exemple comme quand on met un sous-répertoire de fichiers de trace dans le répertoire courant
-        -- on évite la situation en s'assurant par le Where que le résultat est du même répertoire pour le type de fichier cherché
+        -- Retrieve the subsequent files. Caution: sys.dm_os_enumerate_filesystem may recurse into subdirectories,
+        -- for example, when a subdirectory of trace files is placed in the current directory.
+        -- This situation is avoided by ensuring in the WHERE clause that the results are limited to the same directory 
+        -- and the specific type of files being searched.
         JOIN sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, Opt.MatchFichTrc) as Dir 
         ON  
-            Dir.full_filesystem_path > ET.file_name -- premier fichier ou prochain (voir commentaires e ET
-        And Dir.full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- empêcher résultats de récursion, si survient 
-        -- éliminer cas rare où fichier suivant peut être trouvé vide alors qu'il y en a d'autre après qui ne le sont pas
-        -- j'imagine à cause d'une interruption/reprise de la trace
+            Dir.full_filesystem_path > ET.file_name -- first file or next one
+        And Dir.full_filesystem_path Like RepFichTrc+'FullQryAudit[_][0-9]%' -- forbid recursion effect of dm_os_enumerate_filesystem
+        -- Eliminate the rare case where the next file might be found empty while there are other non-empty files after it.
+        -- This is likely due to an interruption or resumption of the trace.
         And Exists (Select * From sys.fn_xe_file_target_read_file(Dir.full_filesystem_path, NULL, NULL, NULL))
       Order By Dir.full_filesystem_path 
-      ) as Suivant
-    ) as StartP -- point de départ pour prochain jeu d'évènements
-    CROSS APPLY -- on va chercher les évènements et on a besoin en plus du event_data, le nom d'évenements et leur sequence
+      ) as NextF
+    ) as StartP -- starting point for next set of events
+    CROSS APPLY -- Get events details from target, limited to file found, at offset when 
     (
     Select event_data = xEvents.event_data, Event_name, Event_Sequence, F.file_name, F.file_offset, Event_time
     FROM 
-      sys.fn_xe_file_target_read_file(StartP.file_name, NULL, StartP.FilenamePourOffset, StartP.DernierOffsetConfirme) as F 
+      sys.fn_xe_file_target_read_file(StartP.file_name, NULL, StartP.FileNameForOffsetOnly, StartP.LastOffsetDone) as F 
       CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
       CROSS APPLY (Select event_name = xEvents.event_data.value('(event/@name)[1]', 'varchar(50)')) as Event_name
       CROSS APPLY (Select Event_Sequence = xEvents.event_data.value('(event/action[@name="event_sequence"]/value)[1]', 'bigint')) as Event_Sequence
       CROSS APPLY (select event_time = xEvents.event_data.value('(event/@timestamp)[1]', 'datetime2(7)') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time') as Event_time
     ) as ev
------------------------------------------------------------------------------------------------------
--- Cette procedure fait joindre l'info sur les connexions avec les requêtes correspondantes
--- Elle supprime aussi elle-même les fichiers traités.
--- Cela est fait dans une boucle, un fichier à la fois pour éviter des surcharges de tempDb
------------------------------------------------------------------------------------------------------
+go
+-- ------------------------------------------------------------------------------------------------------------
+-- This table is updated by dbo.CompleteQueryAuditWithConnectionInfo
+-- Events are unique by Session_id, FirstEventTimeOfSession, event_sequence
+--
+-- Its purpose is to distinguish session_id by event session run, because event_sequence
+-- resets to one when a new run of FullQryAudit event session happen (after a shutdown, because it is autostart
+-- or after a explicit manual restart
+--
+-- see more comments in dbo.CompleteQueryAuditWithConnectionInfo
+-- ------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS dbo.FirstEventTimeOfSession;
+CREATE TABLE dbo.FirstEventTimeOfSession
+(
+  FirstEventTimeOfSession DATETIME DEFAULT Getdate()
+);
+
+INSERT INTO dbo.FirstEventTimeOfSession VALUES (DEFAULT);
 go
 --------------------------------------------------------------------------------------------------------------
 --
--- Cette fonction qui était un morceau de code intégral dse la procedure dbo.CompleterAudit
--- a été isolé de la requête qui insère dans #Tmp afin de s'en servir aussi comme moyen de 
--- pour extraire l'information des évènements enregistrés sans perturber l'état du traitement en cours
--- Les paramètres sont utiisés seulement lorsque on veut explorer les évènements pour faire des tests
+-- This function extracts information from user events originating from the logon trigger,
+-- which will be needed to update the connection history table.
 -- 
 --------------------------------------------------------------------------------------------------------------
 Create Or Alter Function dbo.ExtractConnectionInfoFromEvents (@event_data as Xml)
 Returns Table
 as
 Return
-Select J.*, UserData, UserDataBin, UserDataHexString, event_data
+Select 
+  J.LoginName, J.LoginTime, J.Session_id, J.client_net_address, J.client_app_name
+, Stable.FirstEventTimeOfSession
+, UserData, UserDataBin, UserDataHexString, event_data
 From 
   (Select event_data=@event_data) as Prm 
+  -- user data is stored in the events as a hex string representation
   CROSS APPLY (SELECT UserDataHexString=event_data.value('(event/data[@name="user_data"]/value)[1]', 'nvarchar(max)')) AS UserDataHexString
-  -- conversion en hexadecimal
+  -- hex string conversion to varbinary
   CROSS APPLY (SELECT UserDataBin = CONVERT(VARBINARY(MAX), '0x'+UserDataHexString, 1)) as UserDataBin
-  -- reconversion de l'hexadecimal en texte pour en tirer le contenu
+  -- convert text concealed in varbinary from the trigger
   CROSS APPLY (Select UserData=CAST(UserDataBin as NVARCHAR(4000))) as UserData
-  -- extraction texte JSON du contenu
+  -- extract JSON values from UserData
   Outer APPLY
   (
   SELECT 
@@ -962,10 +1150,12 @@ From
   , Session_id=JSON_VALUE(value, '$.spid')
   , client_net_address=JSON_VALUE(value, '$.client_net_address')
   , client_app_name=JSON_VALUE(value, '$.client_app_name') 
-  , ExtendedSessionCreateTime=JSON_VALUE(value, '$.ExtendedSessionCreateTime') 
   FROM OPENJSON(UserData)
   -- validation for JSON
   ) as J
+  -- this column help discriminate in Dbo.ConnectionsHistory, (ConnectionHistory) session login events
+  -- that belongs to different run if extended session FullQryAudit
+  CROSS JOIN dbo.FirstEventTimeOfSession as Stable
 GO
 --Drop Sequence if Exists dbo.SeqImport
 go
@@ -995,12 +1185,40 @@ Create table dbo.TraceDataModel
 , event_data XML NULL
 )
 Go
-Create or Alter Proc dbo.CompleterInfoAudit
+-------------------------------------------------------------------------------
+--
+-- This procedure is the main processing unit of QueryAuditToolForMsSql
+-- It managed extented events target file of extended events session FullQryAudit
+-- by reading events by one file at the time
+-- It extracts events, separate login events to maintain an Connection history 
+-- from login events
+-- It reads again the events to extract SQL Queries and add to them connection info
+-- namely client_net_address and client_app_name, from connection history
+-- It checks for completed processed file to drop and does the cleanup
+-- of deprecated connection, ans a final cleanup of stuff beyond the 45 days retention date
+--
+--------------------------------------------------------------------------------------------
+Create or Alter Proc dbo.CompleteQueryAuditWithConnectionInfo
 as
 Begin
   Set nocount on
 
+  Declare @StartExEvSessIfNot Nvarchar(max)
+  Select @StartExEvSessIfNot =[StartExtendedSession] From Dbo.EnumsAndOptions
+  Exec (@StartExEvSessIfNot)
+
   declare @CatchPassThroughMsgInTx table (msg nvarchar(max))
+
+  If Exists (Select * from FullQryAudit.dbo.ShowLastJobStatus Where Status <> 'Succeeded')
+  Begin
+    Declare @MsgStart Nvarchar(4000)
+    Declare @br nvarchar(5) = '<br>'
+    Set @MsgStart = 
+    N'<body>FullQryAudit Job is <b><u>NOW RESTARTED AND RUNNING</u></b> '+@br+@br+
+    N'Please check reason of previous Shutdown of FullQryAudit Job with query:'+@br+@br+
+    N'<b>Select * from FullQryAudit.dbo.ShowLastJobStatus<b> </body>'
+    Exec dbo.SendEmail @msg=@MsgStart, @now=0
+  End
 
   Begin Try
 
@@ -1018,13 +1236,10 @@ Begin
   Into #Tmp
   From dbo.TraceDataModel
 
-  While (1=1) -- cette proc est prévue pour rouler constamment avec des Waits selon le volume restant à traiter.
+  While (1=1) -- this stored proc is meant to run forever, with some waitfor to slowdown where there is nothing to do
   Begin
 
-    -- c'est comme plus performant de faire ainsi en 2 step que direct 
-    --todo: si on mettait une valeur générée d'une sequence on aurait une sequence absolue
-    -- sur laquelle on peut se fier pour classer connexions et statement.
-    Truncate table #tmp
+    Truncate table #tmp -- store events in #tmp to do more than one actions on it
     Insert into #tmp
     Select 
       ev.file_name
@@ -1034,119 +1249,113 @@ Begin
     , Ev.Event_time
     , ev.event_data
     From 
-      dbo.GetNextEvents(null, null) as Ev -- le cours normal de l'avancement est basé sur dbo.evenementsTraitesSuivi, d'où les paramètres NULL
+      -- This function refers to dbo.ExtEvProcessedChkPoint for it parameters
+      -- parameters are intended to allow derogation of event read order, by specifying the file and event_sequence
+      -- which is useful for debugging pourposes
+      dbo.GetNextEvents(null, null) as Ev 
     Option (maxDop 1)
 
---    select * from #tmp
-    -- après un traitement précédent si on relit trop vite, on va attendre après des évènements dans le même fichier
-    -- et on peut en trouver trop peu ce qui va créer plus d'entrées dans dbo.evenementsTraitesSuivi
-    -- et le boucle va se faire trop souvent pour rien. On attend donc un peu, et aussi l'insertion des évènements
-    -- dans l'audit va faire attendre plus longtemps s'il n'y pas eu beaucoup d'évènements comme dans une période creuse.
-    -- si on est 
+    -- If no new events are found into the current target, wait.
     If @@rowcount=0 
     Begin
-      -- @@rowcount=0 est la PREUVE QUE:
-      -- Il n'y a pas de nouvel évènement (rien dans le fichier de neuf et en même temps pas de nouveau fichier)
-      -- on fera un nouvel essai dans 2 secondes
-      Waitfor Delay '00:00:05' -- pas de nouveaux evenements et pas de fichiers a detruire.
+      -- @@rowcount=0 is the proof that there is no new event in the current file, and no newer file than 
+      -- the one I tried to access (which means that extended session FullQryAudit didn't flush events at all yet)
+      Waitfor Delay '00:00:05' 
       Continue 
     End
 
+    -- When the file is first read into #Tmp, if the trace was restarted, we took the event_time of the first event
+    -- of the file (Event_sequence=1), and this value holds true as long as no other trace is started
+    -- which implicitely means that it is going to happen only with a new file. 
+    -- It is possible that many files may exists for a same event_session but only one will have event_sequence = 1
+    -- So we only update FirstEventTimeOfSession when this happens
+    Update B
+    Set FirstEventTimeOfSession = Event_time -- set a new date 
+    From 
+      -- If event_sequence = 1 which must happen only once in the target of a trace file
+      -- I limit the result to the first row found (optimization)
+      -- If it is not there, the derived table is empty which "kills" the update (no row to join), so no update
+      (Select Top 1 event_time From #Tmp Where event_sequence=1 Order by event_time) as Event_time
+      CROSS JOIN dbo.FirstEventTimeOfSession as B
+      
     -- store source data in case of the need for debug.
     declare @SeqImport BigInt 
     Set @SeqImport = Next Value For dbo.SeqImport
-    Insert into dbo.TraceDataModel
+
+    Insert into dbo.TraceDataModel -- only insert if function dbo.ModeDebug() = 1
     Select *
     From
       -- could it be done without @SeqImport if "Next Value For dbo.SeqImport" could be in place of @SeqImport
       (Select SeqImport=@SeqImport Where dbo.ModeDebug()=1) as SeqImport
       CROSS JOIN #Tmp
 
-    -- Insérer dans la table d'historique des logins les événements de connexion
-    -- qui sont des événements utilisateurs déclenchés par le trigger LogonAuditReqTrigger.
-
-    -- LogonAuditReqTrigger trigger utilise sp_trace_generateevent qui demande de passer l'information en varbinary et on doit
-    -- reconvertir ce userdata en texte. Comme les extended events expriment leur output en XML
-    -- XML représente ce varbinary comme une chaîne texte exprimant sa valeur hexadécimale
-
-    -- Une fois le détail de ce que LogonAuditTriggerest récupérer on peut insérer ces informations de connexions
-    -- dans l'historique des connexions.
-
-    -- L'utilisation de DISTINCT est nécessaire à l'insertion en raison de cas rares où la jointure avec sys.dm_exec_connections
-    -- retourne plus d'une ligne pour un même session_id, car causé par des doublons session_id dans sys.dm_exec_connections.
-
-    -- On ne prend pas le event_time des fichiers de trace qui est moint précis (tronqué au delà du millième de seconde)
-    -- On garde le event_sequence qui est plus fiable pour trancher
 
     BEGIN TRANSACTION -- keep coherent changes that recover info from event files and ongoing steps of processing
 
-    -- extraire tous les évènements de type User_event qui viennent du logon trigger et contiennent de l'information de login
-    -- Le fait qu'elles se trouvent dans les évènements garanti qu'on a quelque chose de relativement synchrone par 
-    -- rapport aux évènements.
-    Insert Into dbo.HistoriqueConnexions
-      (LoginName, Session_id, LoginTime, client_net_address, client_app_name, ExtendedSessionCreateTime,  Event_Sequence)
-    Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, J.ExtendedSessionCreateTime, Tmp.Event_Sequence
+    -- add connection events extracted from trace to Dbo.ConnectionsHistory
+    -- this table will allow to match connection info with queries.
+    Insert Into Dbo.ConnectionsHistory
+      (LoginName, Session_id, LoginTime, client_net_address, client_app_name, FirstEventTimeOfSession,  Event_Sequence)
+    Select Distinct J.LoginName, J.Session_id, J.LoginTime, J.client_net_address , J.client_app_name, J.FirstEventTimeOfSession, Tmp.Event_Sequence
     From 
       (Select * from #Tmp as Tmp Where Tmp.event_name = 'user_event') as Tmp
       CROSS APPLY dbo.ExtractConnectionInfoFromEvents (Tmp.Event_Data) as J
-    -- Ajout de résilience : Si le processus de traitement des événements est interrompu,
-    -- et que les événements de login doivent être retraités, ce Not Exists permet d'éviter les doublons.
+      -- Only one process performs the insert, and the Not Exists clause provides resilience in case a major failure occurs,
+      -- allowing the process to be restarted without duplicating data.
     Where
-      Not Exists -- Si le processus a planté, et qu'on traite à nouveau les évènements de login
-                 -- ce bout de code empêchera l'insertion de duplicate
+      Not Exists 
       (
       Select * 
-      From dbo.HistoriqueConnexions CE 
+      From Dbo.ConnectionsHistory CE 
       Where 
             CE.Session_id = J.Session_id 
-        And CE.ExtendedSessionCreateTime = J.ExtendedSessionCreateTime
+        And CE.FirstEventTimeOfSession = J.FirstEventTimeOfSession
         And CE.event_sequence = Tmp.Event_Sequence
       )            
-    --select * from dbo.HistoriqueConnexions order by Session_id, ExtendedSessionCreateTime, event_sequence, loginTime
+    --select * from Dbo.ConnectionsHistory order by Session_id, FirstEventTimeOfSession, event_sequence, loginTime
 
-    -- On garde une trace d'où en est rendu dans le fichier, son dernier offset, et les informations de session associées
-    -- on peut reprendre un traitement avec des fichiers d'évènement restaurés, à condition qu'on retraite tout en ordre
-    -- sinon on risque de perdre des informations de connexion.
-    
-    Insert into dbo.EvenementsTraitesSuivi (file_name, last_Offset_done, ExtEvSessCreateTime)
+    -- This table is central to target file processing in the proper order. We need to know what is done to 
+    -- start from there to do next.
+    Insert into dbo.ExtEvProcessedChkPoint (file_name, last_Offset_done, FirstEventTimeOfSession)
     Select 
-      EvInfo.file_name, EvInfo.last_offset_done, ExtEvInfo.ExtendedSessionCreateTime
-    From 
-      ( 
-      -- In working with a single file at the time, create_Time of its extended event session is all the same because a file 
-      -- can't belong to more that a single session
-      -- Dbo.HistoriqueConnexions contains data that comes from Logon trigger generated events, and it doesn't generate events
-      -- if an extended session isn't active (to have coherence with other events)
-      Select Top 1 ExtendedSessionCreateTime From Dbo.HistoriqueConnexions Order By ExtendedSessionCreateTime Desc
-      ) as ExtEvInfo
-      CROSS APPLY -- get last offset of the file to continue from there (the way extended events files are read, there is only one file done at the time)
+      EvInfo.file_name, EvInfo.last_offset_done, FT.FirstEventTimeOfSession
+    From
+      Dbo.FirstEventTimeOfSession as FT -- reference value to keep
+      -- get last offset of the file to continue from there. In this procedure extended events are read from 
+      -- one single file at the time and the events belong to the extended session
+      -- so the file_name value is the same everywhere, but we want a single row 
+      -- containing the file_name and the last_offset, and to avoid a group by
+      -- we do file_name=max(file_name) to get the file_name
+      CROSS APPLY 
       (
-      Select file_name, last_offset_done=MAX(file_offset)
-      From #Tmp
-      Group by file_name     
+      Select file_name=MAX(file_Name), last_offset_done=MAX(file_offset)
+      From #Tmp -- dbo.GetNextEvents process only one file at the time
       ) as EvInfo
     Where 
       not Exists 
       (
       Select * 
-      From dbo.EvenementsTraitesSuivi ES 
+      From dbo.ExtEvProcessedChkPoint ES 
       Where Es.file_name = EvInfo.file_name 
         And Es.last_offset_done = EvInfo.Last_offset_done
       )
-    -- Select * From dbo.EvenementsTraitesSuivi order by datesuivi desc
+    -- Select * From dbo.ExtEvProcessedChkPoint order by ChkPointTime desc
 
     declare @DebutPourProfiler nvarchar(max)
     Select @DebutPourProfiler  = 'Declare @x sysname; set @x='''+file_name+' '+str(file_offset)+''''
     From (Select top 1 file_name, file_offset from #Tmp order by file_name desc, file_offset desc) as x
     Exec (@DebutPourProfiler )
 
+    -- finally we complete full audit info combining connection info from connection events with SQL events
+    -- we also specify event order info, and performance info.
+    -- in this table event_sequence missing are connection events (so there is gap in event_sequence).
     Delete #RcCount Where name = 'insertAuditComplet' 
-    Insert into dbo.AuditComplet 
+    Insert into dbo.FullAudit 
     (
       server_principal_name
     , session_id
     , event_time
-    , ExtendedSessionCreateTime
+    , FirstEventTimeOfSession
     , event_sequence
     , database_name
     , Client_net_address
@@ -1155,12 +1364,17 @@ Begin
       --, line_number
     , statement
     , DurMicroSec
+    , cpu_time
+    , physical_reads
+    , Logical_reads
+    , Writes
+    , Row_Count
     )
     SELECT 
       R.server_principal_name
     , R.session_id
     , R.event_time
-    , R.ExtendedSessionCreateTime
+    , R.FirstEventTimeOfSession
     , R.event_sequence
     , RC.database_name
     , Client_net_address.Client_net_address
@@ -1169,12 +1383,17 @@ Begin
       --, sql_batch
       --, line_number
     , R.DurMicroSec
+    , R.cpu_time
+    , R.physical_reads
+    , R.Logical_reads
+    , R.Writes
+    , R.Row_Count
     From
       (
       Select 
         server_principal_name = Tmp.event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
       , session_id = Tmp.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
-      , ExtEvInfo.ExtendedSessionCreateTime
+      , Stable.FirstEventTimeOfSession
       , Tmp.event_time 
       , Tmp.Event_Sequence
       , database_name = Tmp.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
@@ -1182,47 +1401,54 @@ Begin
       --, line_number = Tmp.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
       , statement = Tmp.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
       , DurMicroSec = Tmp.event_data.value('(event/data[@name="duration"]/value)[1]', 'bigint')
+      , cpu_time = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'int')
+      , logical_reads = Tmp.event_data.value('(event/data[@name="logical_reads"]/value)[1]', 'int')
+      , writes = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'int')
+      , row_count = Tmp.event_data.value('(event/data[@name="row_count"]/value)[1]', 'int')
+      , physical_reads = Tmp.event_data.value('(event/data[@name="physical_reads"]/value)[1]', 'int')
       From 
+        -- we don't keep connection events, since their info is merged with Sql events
         (Select * from #Tmp as Tmp Where Tmp.event_name <> 'user_event') as Tmp
-        CROSS JOIN
-        ( 
-        -- In working with a single file at the time, create_Time of its extended event session is all the same because a file 
-        -- can't belong to more that a single session
-        Select Top 1 ExtendedSessionCreateTime From Dbo.HistoriqueConnexions Order By ExtendedSessionCreateTime Desc
-        ) as ExtEvInfo
+        -- keep in data FirstEventTimeOfSession to discriminate extended sessions, event_sequence and the session_id
+        CROSS JOIN Dbo.FirstEventTimeOfSession as Stable 
       ) as R
       CROSS APPLY (Select Database_Name=ISNULL(R.database_name, 'nom de base de données absent')) as RC
-      -- Un même login peut se connecter et se reconnecter avec un numéro de session différent
-      -- mais ce qu'on cherche c'est le login avec le même session_id
-      -- qui a la sequence la plus proche dans les évènements de requête
-      -- exemple 
-      -- on un login de session_id=500 avec event_Sequence=130 pour fichier 3
-      -- le login de suivant de session_id=500 a l'event_Sequence=400 pour fichier 3
-      -- il y a des requêtes pour cette session_id=500 avec event_sequence > 130 et < 400 pour fichier 3
-      -- Ensuite cette session se termine puis une autre s'ouvre qui réutilise le même session_id 
-      -- exemple le login de session_id=500 avec event_Sequence=401 pour fichier 3
-      -- il y a  des requêtes pour ce session_id=500 avec  event_sequence > 401 pour fichier 3
-      -- donc si on veut associer les requêtes au bon login, il faut qu'il y ait égalité sur le session_id
-      -- et trouver celui dont le event_sequence est plus petit et le plus proche que celui de la requête 
       --
-      -- le Outer apply est là au cas où on ait des requêtes provenant de sessions non encore capturées et mises en évènements
-      -- parce que le login trigger ne capte pas les évènements si l'event session est inactif.
+      -- Here we deal with the fact that a same session (session_id) can be closed and reopen by differents users/processes
+      -- Connection info to be added to queries must be matched in time with the previous connection that
+      -- match the query.
+      --
+      -- A Sql queries matches with the first connection with same session_id that is found to be closer in event
+      -- order which is: Session_id, FirstEventTimeOfSession desc, event_Sequence desc
+      --
+      -- The session_id must always match, and if FirstEventTimeOfSession do not we go to the previous where it is, 
+      -- to the latest event_sequence
+      --
+      -- FirstEventTimeOfSession help descriminate sessions, because event_Sequence restarts to 1 when 
+      -- extended events session restarts, typically when the server restart, 
+      -- or if the extended events session is stopped/restarted
+      --
+      -- le Outer apply is a fallback mecanism in case of session_id existed before the extended events session started
+      -- a rare case is that the session existed, closed and there is no more session_id, before the trace.
+      -- This cases only happen at the very start of extended events sessions
+
       OUTER APPLY 
       (
       Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
-      From Auditreq.dbo.HistoriqueConnexions as Hc
+      From FullQryAudit.Dbo.ConnectionsHistory as Hc
       Where 
-        Hc.session_id = R.session_id -- POUR LA MÊME SESSION!
-        And 
-          ( -- typiquement les créations de sessions SQL se trouvent proches dans le temps des requêtes qui les suivent
-            -- et souvent dans le même fichier/offset
-              Hc.ExtendedSessionCreateTime = R.ExtendedSessionCreateTime
-          And Hc.event_Sequence < R.event_Sequence
-          )
-      Order by Session_id, ExtendedSessionCreateTime desc, event_Sequence desc
+          Hc.session_id = R.session_id -- session_id to link with login events to queries
+          -- events must belongs to the same extended event sessions or a previous one
+      And Hc.FirstEventTimeOfSession <= R.FirstEventTimeOfSession 
+          -- if same extended event session (mostly) with a previous sequence
+          -- or if there isn't a previous sequence, in the previous FirstEventTimeOfSession 
+      And (Hc.event_Sequence < R.event_Sequence OR Hc.FirstEventTimeOfSession < R.FirstEventTimeOfSession)
+      -- ensure we get only the most recents connection event of both case.
+      Order by Session_id, FirstEventTimeOfSession desc, event_Sequence desc
       ) Hc
       -- If the session ins't in the events it is because it login existed BEFORE the extended session started
-      -- so we get the existing info from sys.dm_exec_connections. In that context the user can modify the hotsname() returned
+      -- or before in previous extended session 
+      -- we get the existing info from sys.dm_exec_connections. In that context the user can modify the hotsname() returned
       -- by sys.dm_exec_connecions
       OUTER APPLY 
       (
@@ -1235,141 +1461,178 @@ Begin
         ON C.session_id = S.session_id
       ) as Ci
       -- Three case possible, only one true. 
-      -- 1) Client connections was found in events. Even if events are old, user_event reporting connections are of the same age too.
-      -- case 2 and 3 are very rare.
+      -- 1) Client connections was found in events. Even if events are old, user_event 
+      --    reporting connections are of the same age too.
+      --
+      -- Cases 2 and 3 are very rare.
       -- 2) If not recorded in events, this may be that extended session was started after the connection. This is quite unlikely
       --    because events and trigger are meant to be active at all time. In that case if session was started after, 
       --    get it from actual sys.dm_exec_ views, which is quite accurate, but not 100% reliable
-      -- 3) If not found, give an explantion which the spid isn't there anymore. 
+      -- 3) If not found, give an explantion why the spid isn't there anymore. 
       CROSS APPLY (Select client_app_name = COALESCE(hc.client_app_name, '(Cur)-> '+Ci.Program_name, 'Client program disconnected')) as client_app_name
       CROSS APPLY (Select client_net_address = COALESCE(hc.client_net_address, '(Cur)-> '+Ci.client_net_Address, 'session is gone')) as client_net_Address
 
-      -- Quand l'extended session part, il y a une ou deux connexions qui peuvent être déjà ouvertes, phénomène bref
     Where
-      -- il y a une gestion des fichiers d'évènements traités
-      -- et s'il en sont pas supprimés, il y aura risque de relecture
-      -- des évènements et ce Where Not Exists évite les duplications.
+      -- We manage the processed events files and delete them. If an issue occurs and they are not deleted, this Not Exists clause
+      -- prevents duplication errors. Additionally, if event files are restored, their reprocessing will not generate duplicates.
       Not Exists
       (
       Select * 
-      From dbo.AuditComplet AC
+      From dbo.FullAudit AC
       Where AC.event_time = R.event_time 
-        AND AC.ExtendedSessionCreateTime = R.ExtendedSessionCreateTime
+        AND AC.FirstEventTimeOfSession = R.FirstEventTimeOfSession
         And AC.event_sequence = R.event_Sequence
       )
 
-    -- ralentir plus ou moins la fréquence du traitement s'il n'y a plus d'autres fichiers en avant
-    -- et qu'on a peu d'évènements.
-    -- sur un serveur actif, le test @@rowcount = 0 est trop drastique, et risque de ne pas se produire
+    /* ======================================================================================
+    This audit can be more deep, by tracing all queries of SQL modules
+    In that case we could put module SQL code in SQL+Batch only
+    When line number data is 1, get all the module code.
+    Actually this isn't done and statetment is all the module code
+    This extra code do that
+
+    OUTER APPLY 
+    (
+    Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
+    Where line_number = 1
+    ) as Sql_Batch
+    */
+
+    -- record the number of events processed, for throttling purpose
     Insert into #RcCount(name, cnt) Values ('insertAuditComplet', @@rowcount)
 
-    -- si on traitait toute les requêtes (incluant celle des modules) on pourrait mettre le code du module SQL dans SQL+Batch seulement
-    -- quand le numéro de ligne est 1, la donnée statement ci-dessus donnant chaque requête.
-    -- actuellement on ne le fait pas, et statement est tout le module au démarrage de ce dernier.
-    --OUTER APPLY 
-    --(
-    --Select Sql_batch= ev.event_data.value('(event/action[@name="sql_text"]/value)[1]', 'nvarchar(max)') 
-    --Where line_number = 1
-    --) as Sql_Batch
 
-    -- vérifier si j'ai un fichier à traiter que je ne retrouve plus sur disque pcq un évènement
-    -- manuel ou système l'aurait détruit.
-    Insert into dbo.LogTraitementAudit (Msg)
-    Select Msg=PrefixMsgFichPerdu+Diff.file_name
+    -- Check if a file to process disappaered and notify it to the log
+    Insert into dbo.ProcessAuditLog (Msg)
+    Select Msg=LostFileMsgPrefix+Diff.file_name
     From
-      (Select PrefixMsgFichPerdu, RepFichTrc, MatchFichTrc From Dbo.EnumsEtOpt) as MsgPrefix
+      (Select LostFileMsgPrefix, RepFichTrc, MatchFichTrc From Dbo.EnumsAndOptions) as MsgPrefix
       CROSS APPLY
       (
-      Select top 1 file_Name from dbo.EvenementsTraitesSuivi Order By dateSuivi desc
+      Select top 1 file_Name from dbo.ExtEvProcessedChkPoint Order By ChkPointTime desc
       Except
       Select full_filesystem_path  FROM sys.dm_os_enumerate_filesystem(RepFichTrc, MatchFichTrc) -- attention recursion possible!
-      Where full_filesystem_path Like RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+      Where full_filesystem_path Like RepFichTrc+'FullQryAudit[_][0-9]%' -- pour ôter résultats de récursion possible
       ) as Diff
+    -- the message was generated because the issue is verified
     If @@ROWCOUNT>0 
     Begin
       Declare @msgPerte nvarchar(4000)
-      Select @msgPerte=E.MsgFichPerduGenerique From dbo.EnumsEtOpt as E
-      Insert into dbo.logTraitementAudit (Msg) Values (@msgPerte)
+      Select @msgPerte=E.GenericLostFileMsg From Dbo.EnumsAndOptions as E
+      Insert into dbo.ProcessAuditLog (Msg) Values (@msgPerte)
     End
 
-    -- TODO: Ajouter un failsafe - Si on trouve des fichiers qui existent avant celui de dbo.EvenementsTraites
-    -- Arrêter le traitement avec message.
-    --select * From dbo.EvenementsTraitesSuivi Order by dateSuivi desc
     Declare @aFileToDel nvarchar(256)
     Select @aFileToDel = Autres.full_filesystem_path
     From
-      (Select * From EnumsEtOpt) AS opt
-      CROSS APPLY (select top 1 file_name From dbo.EvenementsTraitesSuivi Order by dateSuivi desc) Dernfich
-      -- je suis passé à traiter un nouveau fichier, car un fichier précédent existe, et que j'ai forcément fini de le traiter
-      -- en fonction de l'algorithme qui poursuit la lecture au prochain fichier
+      (Select * From dbo.EnumsAndOptions) AS opt
+      CROSS APPLY (select top 1 file_name From dbo.ExtEvProcessedChkPoint Order by ChkPointTime desc) Dernfich
+      -- When I switch to a new file, so the previous file exists, it is safe to delete it
       CROSS APPLY 
       (
       Select top 1 Autres.full_filesystem_path
       From 
         sys.dm_os_enumerate_filesystem(Opt.RepFichTrc, opt.MatchFichTrc) Autres -- attention récursion possible!
       Where Autres.full_filesystem_path < DernFich.file_name
-        And Autres.full_filesystem_path Like Opt.RepFichTrc+'AuditReq[_][0-9]%' -- pour ôter résultats de récursion possible
+        And Autres.full_filesystem_path Like Opt.RepFichTrc+'FullQryAudit[_][0-9]%' -- pour ôter résultats de récursion possible
       ) as Autres
     Where Autres.full_filesystem_path IS NOT NULL
+    -- if condition is verified, proceed
     If @@ROWCOUNT > 0
     Begin
-      Insert into dbo.LogTraitementAudit(Msg)  Select 'Suppression de '+@aFileToDel
+      Insert into dbo.ProcessAuditLog(Msg)  Select 'Suppression de '+@aFileToDel
       Exec master.sys.xp_delete_files @afileToDel
     End
 
-    -- On ne veut pas que la table des connexions récentes à l'historique grossise indéfiniment.
-    -- On sait que si une session_id existe en multiples copies (login/logout) et pas nécessairement toutes du même
-    -- utilisateur, ce qui arrive lors des reconnexions, il faut s'aligner sur l'info la plus récente.
-    -- pendant le traitement des évènements du fichier, on besoin de toutes, mais après
-    -- on supprime les connexions périmées, sauf leur dernière occurence qui est peut être toujours ouverte
-    -- et pour laquelle s'en viennent d'autres évènements 
-    -- ou évidemment qui est toujours ouverte si une requête y roule toujours
+    -- We do not want the recent connections history table to grow indefinitely.
+    -- We know that if a session_id exists in multiple copies (login/logout), they are not necessarily all
+    -- from the same user, as happens during reconnections.
+    -- Therefore, we need to find the most recent login event.
+    -- Once the most recent connections have been linked to queries, the connections with the same session_id
+    -- from the same extended event session no longer serve a purpose. Thus, we remove them.
+    -- It is sufficient to keep only the most recent session_ids for each extended event session.
+    
 
-    -- Select * From dbo.HistoriqueConnexions as C Order by Session_id, ExtendedSessionCreateTime, event_sequence
+    -- Select * From Dbo.ConnectionsHistory as C Order by Session_id, FirstEventTimeOfSession, event_sequence
     Delete C
     From
       (
       Select 
         Session_id
-      , ExtendedSessionCreateTime
+      , FirstEventTimeOfSession
       , event_sequence
-      -- attribuer pour un même session_Id un numéro de séquence descendant de sorte que 
-      -- le plus récent a la session d'extended event la plus récente et la séquence d'évènement la plus récente.
-      , OccurenceSessionId = ROW_NUMBER() Over (Partition By Session_id Order by ExtendedSessionCreateTime Desc, event_Sequence Desc)
-      From Dbo.HistoriqueConnexions
+      -- Assign a descending sequence number for the same session_id so that
+      -- the most recent entry corresponds to the latest extended event session 
+      -- and the most recent event sequence for this session.
+      , SessionIdInstance = ROW_NUMBER() Over (Partition By Session_id, FirstEventTimeOfSession Order by event_Sequence Desc)
+      From Dbo.ConnectionsHistory
       ) as Ord
       JOIN 
-      dbo.HistoriqueConnexions as C
-      ON  Ord.OccurenceSessionId > 1 -- toutes les autres ocurences passées de ce session_id
+      Dbo.ConnectionsHistory as C
+      ON  Ord.SessionIdInstance > 1 -- toutes les autres ocurences passées de ce session_id
       And C.Session_Id = Ord.Session_id
-      And C.ExtendedSessionCreateTime = Ord.ExtendedSessionCreateTime
+      And C.FirstEventTimeOfSession = Ord.FirstEventTimeOfSession
       And C.event_Sequence = Ord.event_sequence
 
-    -- ici ça ne sert à rien de garder qqch de plus vieux que la rétention de données
-    Delete From dbo.AuditComplet
-    Where event_time < DATEADD(dd, -45, getdate()) -- détruit traces plus vieilles que 45 jours.
+    -- normally a server is always on, we have only one run of FullQryAudit, and normally a single 
+    -- FirstEventTimeOfSession. If we have more than one, 
+    -- connections older that 45 days, 
+    Delete C
+    From 
+      (
+      Select *, SessionHistoryRank=DENSE_RANK() Over (Order By FirstEventTimeOfSession Desc)
+      From 
+        Dbo.ConnectionsHistory
+      ) as C
+    Where SessionHistoryRank > 1
+      And FirstEventTimeOfSession < DATEADD(dd, -45, getdate()) 
 
-    Delete From dbo.EvenementsTraitesSuivi 
-    Where dateSuivi < DATEADD(dd, -45, getdate()) -- détruit traces plus vieilles que 45 jours.
 
-    Delete From dbo.LogTraitementAudit
-    Where MsgDate < DATEADD(dd, -45, getdate()) -- détruit log plus vieux que 45 jours.
+    -- Data retention which is designed here to be 45 days
+    -- Delete data before this time
+    Delete From dbo.FullAudit
+    Where event_time < DATEADD(dd, -45, getdate()) 
 
-    -- Si jamais un mauvais fonctionnement cause un problème on éviter de garder des choses indéfiniment
+    Delete From dbo.ExtEvProcessedChkPoint 
+    Where ChkPointTime < DATEADD(dd, -45, getdate()) 
+
+    Delete From dbo.ProcessAuditLog
+    Where MsgDate < DATEADD(dd, -45, getdate()) 
+
     Delete Cn
-    From dbo.HistoriqueConnexions as Cn
-    Where Cn.LoginTime < DATEADD(dd, -45, getdate()) -- détruit historique connexions si on en échappe qui sont plus vieux que 45j
+    From Dbo.ConnectionsHistory as Cn
+    Where Cn.LoginTime < DATEADD(dd, -45, getdate()) 
 
-    Commit -- Keep coherent 
+    Commit -- Keep this batch of events coherent 
 
-    -- on teste dehors du commit pour ne pas faire de wait dans la transaction
-    -- c'est malcommode de tester le contenu des tables car la transaction dure trop
-    -- longtemps pour rien quand il y a un wait dedans
+    -- We dont want to do wait in transactions, because when testing
+    -- and trying to check table content, this extended wait adds up when trying to get results
     If Exists (Select * From #RcCount Where name='insertAuditComplet'  and cnt < 100)
-       And Not Exists (Select * From Dbo.FichierLiberable()) 
+       And Not Exists (Select * From Dbo.FileCanBeDisposed()) 
     Begin
       Waitfor Delay '00:00:15' 
     End
+
+    If Not Exists 
+       (
+       Select * 
+       From 
+         Dbo.EnumsAndOptions as E 
+         CROSS JOIN sys.dm_xe_sessions
+       Where name = E.JobName
+       )
+     Raiserror('Session FullQryAudit was detected as stopped', 11, 1);
+
+    If Not Exists 
+       (
+       Select * 
+       From 
+         Dbo.EnumsAndOptions as E 
+         CROSS JOIN sys.server_triggers as T
+       Where name = 'Logon'+jobName+'Trigger'
+         And T.is_disabled = 0
+       )
+     Raiserror('Session LogonFullQryAuditTrigger was detected as missing or disabled', 11, 1);
 
   End -- While forever
 
@@ -1380,23 +1643,21 @@ Begin
        ROLLBACK TRANSACTION;
     END
     Declare @msg nvarchar(max)
-    Select @msg='Error from AuditReq.Dbo.CompleterAudit '+nchar(13)+nchar(10)+Fmt.ErrMsg
+    Select @msg='Error from FullQryAudit.Dbo.CompleteQueryAuditWithConnectionInfo '+nchar(13)+nchar(10)+Fmt.ErrMsg
     From 
-      (Select ErrMsgTemplate From dbo.EnumsEtOpt) as E
+      (Select ErrMsgTemplate From Dbo.EnumsAndOptions) as E
       CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
     Insert into @CatchPassThroughMsgInTx Values (@Msg)
-    Insert into dbo.LogTraitementAudit (msg) Select Msg From @CatchPassThroughMsgInTx
-    Exec ('ALTER EVENT SESSION AuditReq ON SERVER STATE = Stop')
+    Insert into dbo.ProcessAuditLog (msg) Select Msg From @CatchPassThroughMsgInTx
+    If Exists(Select * From sys.Dm_xe_sessions Where name = N'FullQryAudit')
+      Exec ('ALTER EVENT SESSION FullQryAudit ON SERVER STATE = Stop')
     Exec dbo.SendEmail @msg
-    RAISERROR(@msg,16,1) WITH Log -- erreur mis au log de SQL Server
+    RAISERROR(@msg,16,1) WITH Log -- erreur goes to SQL Server ErrorLog
   End Catch
   
-End -- dbo.CompleterInfoAudit
+End -- dbo.CompleteQueryAuditWithConnectionInfo
 go
--- no more needed, this table and its trigger
-Drop table if exists dbo.PipelineDeTraitementFinalDAudit
-GO
-Create or Alter Function dbo.HostMostUsedByLoginName(@LoginName sysname = 'Pelletierr')
+Create or Alter Function dbo.HostMostUsedByLoginName(@LoginName sysname = 'SomeOne')
 Returns Table
 as
 Return
@@ -1416,7 +1677,7 @@ From
       CROSS APPLY 
       (
       Select Top 10 LoginName, client_net_address, LoginTime
-      FROM AuditReq.dbo.HistoriqueConnexions
+      FROM FullQryAudit.Dbo.ConnectionsHistory
       Where LoginName=P.PrmUtil
       Order By LoginName, LoginTime Desc
       ) As DixDerniersPostesParLoginName
@@ -1426,7 +1687,7 @@ Where nbOcc_Client_net_address=plusFrequent
 go
 USE [msdb]
 GO
-/****** Object:  Job AuditReq    Script Date: 2024-06-29 09:23:36 ******/
+/****** Object:  Job FullQryAudit    Script Date: 2024-06-29 09:23:36 ******/
 Begin Try 
 
   BEGIN TRANSACTION;
@@ -1435,20 +1696,20 @@ Begin Try
   DECLARE @jobId BINARY(16)
   Declare @JobName sysName
   Declare @context sysname
-  Select @jobname = 'AuditReq'
+  Select @jobname = 'FullQryAudit'
   Select @jobId = job_id From msdb.dbo.sysjobs where name =@JobName
   
   If @jobId IS NOT NULL
   Begin
     Set @context = 'delete la job'
     EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=@JobName
-    IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+    IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_delete_schedule ',11,1,@returnCode)
 
     If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
     Begin
-      EXEC sp_detach_schedule @job_name = @JobName, @schedule_name = N'AuditReqAutoRestart';
-      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='AuditReqAutoStart'
-      IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_delete_schedule ',11,1,@returnCode)
+      EXEC sp_detach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
+      Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='FullQryAuditAutoStart'
+      IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_delete_schedule ',11,1,@returnCode)
     End
   End
 
@@ -1466,33 +1727,11 @@ Begin Try
 		  @category_name=N'Data Collector', 
 		  @owner_login_name=N'sa',
     @job_id = @jobId OUTPUT
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job ',11,1,@returnCode)
-
-  Set @context = 'ajout du step CheckAndStartExtendedEvent'
-  EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'CheckAndStartExtendedEvent', 
-		  @step_id=1, 
-		  @cmdexec_success_code=0, 
-		  @on_success_action=3, -- temporaire a mette a jour
-		  @on_fail_action=2, 
-		  @on_fail_step_id=0, 
-		  @retry_attempts=0, 
-		  @retry_interval=0, 
-		  @os_run_priority=0, @subsystem=N'TSQL', 
-		  @command=
-  N'
--- permet à la trace de repartir et de logger la connexion du step suivant
-If Not exists (Select * From sys.dm_xe_sessions where name = ''AuditReq'')
-Exec (''ALTER EVENT SESSION AuditReq ON SERVER STATE = Start'')
-Waitfor delay ''00:00:05''
-  ', 
-		@database_name=N'AuditReq', 
-		@flags=4
-
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job_Step ',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_job ',11,1,@returnCode)
 
   Set @context = 'ajout du step Run'
   EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Run', 
-		  @step_id=2, 
+		  @step_id=1, 
 		  @cmdexec_success_code=0, 
 		  @on_success_action=2, -- si la job arrête, c'est un erreur à rapporter, elle ne devrait pas
 		  @on_success_step_id=0, 
@@ -1504,35 +1743,23 @@ Waitfor delay ''00:00:05''
 		  @command=
     N'
 Begin try
-  EXECUTE [dbo].[CompleterInfoAudit]
+  EXECUTE [dbo].[CompleteQueryAuditWithConnectionInfo]
 End Try
 Begin catch
   Declare @msg nvarchar(max)
   Select @msg = F.ErrMsg
   From 
-    AuditReq.dbo.FormatCurrentMsg (NULL) as F
+    FullQryAudit.dbo.FormatCurrentMsg (NULL) as F
   Print @msg
 End catch	
 ', 
-		  @database_name=N'AuditReq', 
+		  @database_name=N'FullQryAudit', 
 		  @flags=4
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_job_Step ',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_job_Step ',11,1,@returnCode)
 
-  Set @context = 'Modif du step CheckAndStartExtendedEvent'
-  EXEC msdb.dbo.sp_update_jobstep  @job_id=@jobId, @step_name= N'CheckAndStartExtendedEvent',  
-    @step_id = 1,
-    @on_success_action = 4,
-    @on_success_step_id = 2,
-    @on_fail_action = 2,
-    @on_fail_step_id = 0;
-
-  Set @context = 'Setup du step de départ de la job à CheckAndStartExtendedEvent'
-  EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_update_Job ',11,1,@returnCode)
-
-  Set @context = 'Ajout horaire AuditReqAutoStart'
+  Set @context = 'Add schedule for FullQryAuditAutoStart'
   EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
-    @schedule_name=N'AuditReqAutoStart',
+    @schedule_name=N'FullQryAuditAutoStart',
 		  @enabled=1, 
 		  @freq_type=64, 
 		  @freq_interval=0, 
@@ -1545,14 +1772,14 @@ End catch
 		  @active_start_time=0, 
 		  @active_end_time=235959, 
 		  @schedule_uid=N'125473bc-5be4-482d-a983-6429de1eb934'
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule pour AuditReqAutoStart',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_schedule pour FullQryAuditAutoStart',11,1,@returnCode)
 
-  Set @context = 'Attache horaire AuditReqAutoStart a la job'
-  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'AuditReqAutoStart';
+  Set @context = 'Attach schedule for FullQryAuditAutoStart'
+  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoStart';
 
-  Set @context = 'Ajout horaire AuditReqAutoRestart'
+  Set @context = 'Add schedule for FullQryAuditAutoRestart'
   EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
-  @schedule_name=N'AuditReqAutoRestart', 
+  @schedule_name=N'FullQryAuditAutoRestart', 
 		@enabled=1, 
 		@freq_type=4, 
 		@freq_interval=1, 
@@ -1565,23 +1792,23 @@ End catch
 		@active_start_time=0, 
 		@active_end_time=235959, 
 		@schedule_uid=N'0d25ae92-b4d3-4c26-868a-046121824dc8'
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_schedule pour AuditReqAutoRestart',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_schedule pour FullQryAuditAutoRestart',11,1,@returnCode)
 
-  Set @context = 'Attache horaire AuditReqAutoRestart a la job'
-  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'AuditReqAutoRestart';
+  Set @context = 'Attach schedule for FullQryAuditAutoRestart a la job'
+  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
 
-  Set @context = ' specifie (local) comme job server de la job'
+  Set @context = 'Set (local) as job server for the job'
   EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_add_jobserver ',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_jobserver ',11,1,@returnCode)
 
 EXEC msdb.dbo.sp_update_job @job_id=@jobId,
 		@notify_level_email=2, 
 		@notify_level_page=2, 
-		@notify_email_operator_name=N'AuditReq_Operator'
+		@notify_email_operator_name=N'FullQryAudit_Operator'
 
-  Set @context = 'Demarre de la job'
+  Set @context = 'Start the job'
   EXEC dbo.sp_start_job @JobName;
-  IF (@ReturnCode <> 0) Raiserror ('Code de retour de %d de msdb.dbo.sp_start_job ',11,1,@returnCode)
+  IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_start_job ',11,1,@returnCode)
 
   COMMIT
 End Try
@@ -1589,12 +1816,12 @@ Begin catch
   Declare @msg nvarchar(max)
   Select @msg = @context + nChar(10)+F.ErrMsg
   From 
-    AuditReq.dbo.FormatCurrentMsg (NULL) as F
-  Print 'erreur à la définition ou au lancement de la job: '+@msg
+    FullQryAudit.dbo.FormatCurrentMsg (NULL) as F
+  Print 'Error when defining or lauching the job: '+@msg
   ROLLBACK
 End catch
 GO
-Use AuditReq
+Use FullQryAudit
 go
 -- help find mappings of extended events to old Sql trace
 Create or alter view dbo.EquivExEventsVsTrace
@@ -1628,121 +1855,23 @@ From
   (
   select event_sequence, event_time, statement, f, s, bs=isnull(lag(s,1,0) Over (partition by f order by s),'00000')
   from 
-    dbo.AuditComplet
+    dbo.FullAudit
     cross apply (Select F=cast(SUBSTRING(statement,12,3) as int)) as f
     cross apply (select S=cast(SUBSTRING(statement,20,5) as int)) as s
   where statement like 'SELECT Fen=%,Seq=%' 
   ) as r
 Where S-bs<>@diff -- should be 1 if no gap or missing 
 go
--- Select * from dbo.findMissingSeq (1)--should return nothing for a valid test
--- Select * from dbo.findMissingSeq (0) order by f,s--should return all rows of the test for a valid test
--- select * from AuditComplet
--- select * From dbo.HistoriqueConnexions 
---Select * From dbo.EquivExEventsVsTrace where EventClass like 'UserCon%'--
-
---Select file_name, last_Offset_done, count(*), MIN (passe), MAX(passe)
---From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
---group by file_name, last_Offset_done
---order by file_name, last_Offset_done
---Select * From auditReq.dbo.LogTraitementAudit 
-/*
-
-Select *--session_id--, sql_batch, statement 
-From auditReq.dbo.AuditComplet with (nolock) 
-order by event_time
-
--- trace pour tests
-Select ntile(3) over (order by logintime), * 
-From AuditReq.dbo.connexionsRecentes order by logintime
-Select * From auditReq.dbo.EvenementsTraites with (nolock)
-Select * From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
-order by dateSuivi
-Select file_name, last From auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
-group by dateSuivi
-
-where msg like '%D:\_Tmp\AuditReq\AuditReq_0_133635856879820000.Xel%'
-with (nolock) order by msgDate
-Select * From auditReq.dbo.LogTraitementAudit 
-where MsgDate <= '2024-06-22 21:03:20.8561224'
-Select stuff(msg, 87, 3, '') From auditReq.dbo.LogTraitementAudit with (nolock) order by stuff(msg, 87, 3, '')
-Select * From auditreq.dbo.EvenementsTraitesSuivi 
-
-
-Select *, 
-From 
-  auditReq.dbo.EvenementsTraitesSuivi with (nolock) 
-  left join 
-  (values ('AuditReq_0_133636748038350000'), ('AuditReq_0_133636749713830000'), ('AuditReq_0_133636750202440000'), ('AuditReq_0_133636750291350000')
-  ) as L(l)
-  on file_name like '%'+l.l+'%'
-  left join AuditReq.dbo.LogTraitementAudit as A
-  on A.Msg Like '%'+file_name+'%'
-order by dateSuivi
-
-
-Select event_time, SeqInQuery, row_number() Over (order by SeqInQuery), statement
-From 
-  auditReq.dbo.AuditComplet with (nolock)
-  cross apply (select seqInQuery=substring(statement,3,6)) as SeqInQuery
-where statement  like '--[0-9][0-9][0-9][0-9][0-9][0-9]%'
-order by seqInQuery
-
-
-Select *, convert (varbinary(max),statement)  From auditReq.dbo.AuditComplet with (nolock) 
---where rtrim(statement) = '' 
-where event_time = '2024-06-23 15:16:15.2220000 -04:00'
-order by event_time 
-where statement  like '%Create%Or%Alter%Function%S#.ColInfo%'
-Select top 3
-  ev.server_principal_name
-, ev.session_id
-, ev.event_time
-, Hc.client_app_name
-, Hc.Client_net_address
-, ev.database_name
-, ev.statement 
-, ev.sql_batch
-, startP.file_Name
-, StartP.last_Offset_done
-, Ev.file_name
-, ev.file_Offset
-, ev.Event_Data
-From 
-  ( -- function sys.fn_xe_file_target_read_file needs file to read from and last_offset_done
-    -- to skip events already done
-  Select file_name, last_Offset_done From AuditReq.dbo.EvenementsTraites 
-  UNION ALL
-  -- La fonction sys.fn_xe_file_target_read_file a besoin de ces param au départ
-  Select NULL, NULL Where Not Exists (Select * From dbo.EvenementsTraites)
-  ) as StartP
-  CROSS APPLY
-  (
-  SELECT 
-    F.file_Name
-  , F.file_Offset 
-  , event_time = xEvents.event_data.value('(event/@timestamp)[1]', 'datetime2') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time'
-  , server_principal_name = xEvents.event_data.value('(event/action[@name="server_principal_name"]/value)[1]', 'varchar(50)')
-  , session_id = xEvents.event_data.value('(event/action[@name="session_id"]/value)[1]', 'int')
-  , database_name = xEvents.event_data.value('(event/action[@name="database_name"]/value)[1]', 'varchar(50)')
-  , statement = xEvents.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
-  , sql_batch = xEvents.event_data.value('(event/action[@name="sql_batch"]/value)[1]', 'nvarchar(max)') 
-  , xEvents.event_data
-  FROM sys.fn_xe_file_target_read_file('D:\_tmp\AuditReq\AuditReq*.xel', NULL, StartP.file_name, StartP.last_Offset_done) as F --'D:\_tmp\QueryTrackingSession_0_133625926429210000.xel',	9111552) --null, null)
-  CROSS APPLY (SELECT CAST(event_data AS XML) AS event_data) AS xEvents
-  ) as ev
-  OUTER APPLY 
-  (
-  Select TOP 1 Hc.client_app_name, Hc.Client_net_address 
-  From Auditreq.dbo.connexionsRecentes as Hc
-  Where Hc.LoginName = ev.server_principal_name 
-    And Hc.session_id = ev.session_id
-    And Hc.LoginTime < ev.event_time
-  Order by Session_id, LoginName, LoginTime desc
-  ) Hc
-
-cd d:\_tmp\AuditReq
-sqlcmd -E -S.\sql2k19 -dS# -i GrosseCharge.Sql
-Exec AuditReq.dbo.CompleterInfoAudit
-if @@TRANCOUNT>0 Rollback -- quand on test la SP et qu'on force son arrêt
+Select MsgVersion From dbo.version
+GO
+/* -- useful queries for debug
+--SELECT sqlserver_start_time AS ServerRestartTime FROM sys.dm_os_sys_info;
+select * from dbo.FirstEventTimeOfSession
+select * from Dbo.ConnectionsHistory order by FirstEventTimeOfSession desc, Session_id, event_sequence desc
+select * from dbo.FullAudit Order by event_time desc
+Select * from FullQryAudit.dbo.ShowLastJobStatus 
+select event_time, FirstEventTimeOfSession, event_sequence, Client_net_address,session_id, client_app_name, database_name, statement 
+from dbo.FullAudit 
+where Client_net_address like 'Cur%'
+Order by event_time desc
 */
