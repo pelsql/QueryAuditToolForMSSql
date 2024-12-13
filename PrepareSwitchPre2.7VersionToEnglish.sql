@@ -1,5 +1,5 @@
 -----------------------------------------------------------------------------
--- configurer au préalable le répertoire parent et le sous-répertoire d'audit
+-- configurer au prÃ©alable le rÃ©pertoire parent et le sous-rÃ©pertoire d'audit
 -----------------------------------------------------------------------------
 Drop table if exists #RepAudit
 Select maindir='D:\_tmp\', SubDirAudit='AuditReq', NewNaming='FullQryAudit'
@@ -149,10 +149,18 @@ If Object_id('dbo.LogTraitementAudit') IS NOT NULL
 GO
 Drop table if exists dbo.PipelineDeTraitementFinalDAudit
 GO
-
+If Object_id('dbo..XpCmdShellWasOff') IS NULL
+Begin
+  Create Table dbo.XpCmdShellWasOff (i Int)
+End
+If Object_id('dbo.XpCmdShellWasOff') IS NOT NULL
+Begin
+  Exec sp_configure 'Xp_CmdShell', '1'
+  Reconfigure
+End
+GO
 USE tempdb
 GO
-
 Create or Alter Function Dbo.ScriptFullDbRename (@OldDbName SysName, @NewDbName SysName)
 Returns Table
 as
@@ -161,6 +169,8 @@ Select Sql=STRING_AGG(Sql3,'')
 From
   (Select crlf=nChar(13)+nchar(10), Q='''') as Const
   CROSS APPLY (Select OldDbName=@OldDbName, NewDbName=@NewDbName) as Prm
+  -- stops the query if database do not exists 
+  CROSS APPLY (Select DbIdFound=database_id From sys.databases Where name=OldDbName) as DbIdFound
   CROSS APPLY
   (
   Select Sql0 = 'Alter Database #OldDbName# Set Single_User With Rollback immediate;'+crLf
@@ -171,21 +181,26 @@ From
   From 
     (Select t0=
     N'ALTER DATABASE #NewDbName# MODIFY FILE (NAME = |#Ln#|, FILENAME = |#nPn#|);'+crlf+
-    N'ALTER DATABASE #NewDbName# MODIFY FILE (NAME = |#Ln#|, NEWNAME=|#nLn#|);'+crLf
+    N'ALTER DATABASE #NewDbName# MODIFY FILE (NAME = |#Ln#|, NEWNAME=|#nLn#|);'+crLf+
+    N'EXEC XP_CMDSHELL |cmd /c REN "#Pn#" #nLn#.#Ext#|, NO_OUTPUT'+crLf
     ) as t0
     CROSS APPLY
     (
-    SELECT Ln, nLn, nPn
+    SELECT Ln, Pn, nLn, nPn, type_desc, ext
     FROM 
       sys.master_files
       CROSS APPLY (Select Ln=name, pn=physical_name) as N
       CROSS APPLY (Select nLn=REPLACE(N.Ln, OldDbName, NewDbName)) as nLn
       CROSS APPLY (Select nPn=REPLACE(N.pn, OldDbName, NewDbName)) as nPn
-    WHERE database_id = DB_ID(OldDbName)
+      CROSS APPLY (Select ext=IIF(type_desc='ROWS', 'Mdf', 'Ldf')) as Ext
+    WHERE database_id = DB_ID(DbIdFound)
     ) as F
     CROSS APPLY (Select t1=replace(t0, '#Ln#', F.Ln)) as t1
     CROSS APPLY (Select t2=replace(t1, '#nPn#', F.nPn)) as t2  
-    CROSS APPLY (Select Sql0=replace(t2, '#nLn#', F.nLn)) as t3
+    CROSS APPLY (Select t3=replace(t2, '#nLn#', F.nLn)) as t3
+    CROSS APPLY (Select t4=replace(t3, '#Pn#', F.Pn)) as t4
+    CROSS APPLY (Select t5=replace(t4, '#Ext#', F.Ext)) as t5
+    CROSS APPLY (Select Sql0=t5) as Sql0
   UNION All
   Select Sql0 = 'Alter Database #NewDbName# Set ONLINE;'+crLf
   UNION All
@@ -203,9 +218,12 @@ Begin
 End
 GO
 Declare @Sql Nvarchar(max) = dbo.ScalarScriptFullDbRename('AuditReq', 'FullQryAudit')
---Declare @Sql Nvarchar(max) = dbo.ScalarScriptFullDbRename('FullQryAudit', 'AuditReq')
-Print @Sql
-Exec (@Sql)
+If @@ROWCOUNT>0
+Begin
+  --Declare @Sql Nvarchar(max) = dbo.ScalarScriptFullDbRename('FullQryAudit', 'AuditReq')
+  Print @Sql
+  Exec (@Sql)
+End
 GO
 If Not Exists
    (
@@ -216,22 +234,9 @@ If Not Exists
    where is_directory=1
    ) 
 Begin
-  Print 'La connexion va être arrêter pour ne pas aller plus loin. Fermer et reconnecter'
-  Raiserror ('Le répertoire configuré n''est pas trouvé', 20, 1)
+  Print 'La connexion va Ãªtre arrÃªter pour ne pas aller plus loin. Fermer et reconnecter'
+  Raiserror ('Le rÃ©pertoire configurÃ© n''est pas trouvÃ©', 20, 1)
 End 
-GO
-If Object_id('dbo.XpCmdShellWasOn') IS NULL And Object_id('dbo..XpCmdShellWasOff') IS NULL
-Begin
-  If Exists(Select * From sys.Configurations Where name = 'xp_cmdshell' And value_in_Use=1)
-    Create Table dbo.XpCmdShellWasOn (i Int)
-  Else
-    Create Table dbo.XpCmdShellWasOff (i Int)
-End
-If Object_id('dbo.XpCmdShellWasOff') IS NOT NULL
-Begin
-  Exec sp_configure 'Xp_CmdShell', '1'
-  Reconfigure
-End
 GO
 drop table if exists  #renCmd
 Select cmd
@@ -261,7 +266,15 @@ FROM
   CROSS APPLY (Select Ren='Ren '+R.maindir+R.SubDirAudit+' '+R.NewNaming) as ren
   cross apply (Select cmd='Exec XP_CmdShell '''+ren+'''') as cmd
 Where F.is_Directory = 1
-Print 'Pour finaliser cette étape faite la commande suivante en mode powershell administrateur'
-Print 'Vérifier que le nom de répertoire a changé, sinon faites le changement manuellement'
+Print 'Pour finaliser cette Ã©tape faites la commande suivante en mode powershell administrateur'
+Print 'VÃ©rifier que le nom de rÃ©pertoire a changÃ©, sinon faites le changement manuellement'
 Print @Cmd
+
+If Object_id('dbo.XpCmdShellWasOff') IS NOT NULL
+Begin
+  Exec sp_configure 'Xp_CmdShell', '0'
+  Reconfigure
+  Drop Table if exists dbo.XpCmdShellWasOff
+End
+GO
 
