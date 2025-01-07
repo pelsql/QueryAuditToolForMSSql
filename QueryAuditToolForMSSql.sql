@@ -1,5 +1,5 @@
 ﻿/*
-FullQryAudit Version 2.7 Repository https://github.com/pelsql/QueryAuditToolForMSSql
+FullQryAudit Version 2.7.1 Repository https://github.com/pelsql/QueryAuditToolForMSSql
 Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
 (To obtain the most recent version go to this link below)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
@@ -27,7 +27,7 @@ Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/
 -- Register a temporary table.
 -- This table contains the version number of this script.
 -- It allows the creation of the view dbo.version later in the script once the database is created.
-Drop table if exists #version; Select Version='2.7' into #version
+Drop table if exists #version; Select Version='2.7.1' into #version
 Go
 Use tempdb
 go
@@ -672,13 +672,28 @@ GO
 IF SUSER_SID('FullQryAuditUser') IS NOT NULL 
     DROP LOGIN FullQryAuditUser;
 GO
+declare @unknownPwd nvarchar(100) = convert(nvarchar(400), HASHBYTES('SHA1', convert(nvarchar(100),newid())), 2)
+Exec
+(
+'
+create login FullQryAuditUser 
+With Password = '''+@unknownPwd+'''
+   , DEFAULT_DATABASE = Tempdb, DEFAULT_LANGUAGE=US_ENGLISH
+   , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF
+'
+)
+Use master
+GRANT VIEW SERVER STATE TO FullQryAuditUser;
+GRANT ALTER TRACE TO FullQryAuditUser;
+Use FullQryAudit
+GO
 -----------------------------------------------------------------------------------------------------------------
 -- Logon trigger to capture login details such as login name, client network address, and application name.
 -- This information is sent as a custom event to the FullQryAudit Extended Event session, ensuring both login events
 -- and query activities are logged in a synchronized and sequential manner.
 -----------------------------------------------------------------------------------------------------------------
 CREATE or Alter TRIGGER LogonFullQryAuditTrigger 
-ON ALL SERVER 
+ON ALL SERVER WITH EXECUTE AS 'FullQryAuditUser'
 FOR LOGON
 AS
 BEGIN
@@ -1501,7 +1516,6 @@ Begin
     -- record the number of events processed, for throttling purpose
     Insert into #RcCount(name, cnt) Values ('insertAuditComplet', @@rowcount)
 
-
     -- Check if a file to process disappaered and notify it to the log
     Insert into dbo.ProcessAuditLog (Msg)
     Select Msg=LostFileMsgPrefix+Diff.file_name
@@ -1574,9 +1588,16 @@ Begin
       And C.FirstEventTimeOfSession = Ord.FirstEventTimeOfSession
       And C.event_Sequence = Ord.event_sequence
 
+    -- Do some cleanup to limit retention which is designed here to be 45 days
+    -- Delete data before this time
+    -- Limit the size of the delete in case some cleanup would've been missed from a previous version
+    -- The size is more than enough to cover many insert into FullAudit (by experience)
+    Delete TOP (100000) From dbo.FullAudit 
+    Where event_time < DATEADD(dd, -45, getdate()) 
+
     -- normally a server is always on, we have only one run of FullQryAudit, and normally a single 
-    -- FirstEventTimeOfSession. If we have more than one, 
-    -- connections older that 45 days, 
+    -- FirstEventTimeOfSession. If we have more than one, there will be deleted 
+    -- with older that 45 days
     Delete C
     From 
       (
@@ -1586,12 +1607,6 @@ Begin
       ) as C
     Where SessionHistoryRank > 1
       And FirstEventTimeOfSession < DATEADD(dd, -45, getdate()) 
-
-
-    -- Data retention which is designed here to be 45 days
-    -- Delete data before this time
-    Delete From dbo.FullAudit
-    Where event_time < DATEADD(dd, -45, getdate()) 
 
     Delete From dbo.ExtEvProcessedChkPoint 
     Where ChkPointTime < DATEADD(dd, -45, getdate()) 

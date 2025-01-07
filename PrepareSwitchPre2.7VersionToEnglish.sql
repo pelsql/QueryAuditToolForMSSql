@@ -35,10 +35,24 @@ Begin
   End
 End
 GO
-Use Master
-DROP TRIGGER IF EXISTS LogonAuditReqTrigger ON ALL SERVER;
-GO
 Use AuditReq
+GO
+IF EXISTS (select * from sys.server_triggers where name = 'LogonAuditReqTrigger')
+Begin
+  Exec ('DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;')
+End
+GO
+IF USER_ID('AuditReqUser') IS NOT NULL 
+    DROP USER AuditReqUser;
+GO
+IF SUSER_SID('AuditReqUser') IS NOT NULL 
+    DROP LOGIN AuditReqUser;
+GO
+IF EXISTS (select * from sys.server_triggers where name = 'LogonAuditReqTrigger')
+Begin
+  Exec ('DROP TRIGGER LogonAuditReqTrigger ON ALL SERVER;')
+End
+GO
 If Exists (Select * From Sys.dm_xe_sessions where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP
 Else 
@@ -277,4 +291,3 @@ Begin
   Drop Table if exists dbo.XpCmdShellWasOff
 End
 GO
-

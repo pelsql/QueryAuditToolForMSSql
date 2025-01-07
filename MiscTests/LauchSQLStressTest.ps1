@@ -3,9 +3,28 @@ Set-Location D:\_SQL\QueryAuditToolForMSSql\MiscTests
 
  # Path to the .ps1 script you want to run in each new window
 $scriptPath = "D:\_SQL\QueryAuditToolForMSSql\MiscTests\ASingleTest.ps1"
+Import-Module ./Invoke-SqlQueries 
 
 # Define the number of windows you want to open
 $n = 12
+
+$sql = "GRANT CONNECT TO GUEST"
+Invoke-SqlQueries -ServerInstance '.\SQL2K19' -Database StackOverflow2013 -Queries $sql -ThrowExceptionOnError -GetResultSet 0 -Verbose
+
+$sql = 
+"If SUSER_SID('StackOverflowLowPrivUser') IS NULL 
+    Exec 
+    (
+    'create login StackOverflowLowPrivUser
+    With Password = ''6SbCvzN>%p-?''
+       , DEFAULT_DATABASE = Tempdb, DEFAULT_LANGUAGE=US_ENGLISH
+       , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF'
+    )
+"
+Invoke-SqlQueries -ServerInstance '.\SQL2K19' -Database StackOverflow2013 -Queries $sql -ThrowExceptionOnError -GetResultSet 0 -Verbose
+
+$sql = "Grant select on dbo.Posts to guest"
+Invoke-SqlQueries -ServerInstance '.\SQL2K19' -Database StackOverflow2013 -Queries $sql -ThrowExceptionOnError -GetResultSet 0 -Verbose
 
 
 $filePath = "D:\_SQL\QueryAuditToolForMSSql\MiscTests\stopwatch.txt"
@@ -18,7 +37,7 @@ for ($i = 1; $i -le $n; $i++) {
     Write-Host "Started PowerShell window $i running $scriptPath" "-fenetre $i"
 }
 
-# attendre a un moment  précis 0 ou 30 secondes
+# attendre a un moment  prï¿½cis 0 ou 30 secondes
 $currentTime = Get-Date
 $currentSecond = $currentTime.Second
 if ($currentSecond -lt 30) {
