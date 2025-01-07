@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.7 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.7.1 **[Version Française](#queryaudittoolformssql-français)**
 
 Click **[here](#version-history)** for Version History
 
@@ -73,9 +73,15 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 
 - Additional adjustments have been made to make the code easier to diagnose in case of issues, including informative emails and regular environment compliance tests.
 
+- **Version 2.7.1** : 
+- Review the version 2.7 notes, unless this is a fresh installation.
+- A quick fix was deployed to configure the login trigger with the correct privileges, ensuring non-sysadmin users are not blocked from logging in.
+- The tests were updated to validate a privilege issue that could prevent a login.
+- The amount of data deleted at once in dbo.FullAudit has been limited to avoid unnecessarily large transactions. This measure ensures that the transaction log space can be freed by log backups, particularly in cases where a previous version did not properly clean up.
+
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.7
+Version 2.7.1
 
 Cliquer **[ici](#historique-des-versions)** pour l'historique des versions
 
@@ -146,3 +152,9 @@ Tests de qualité réussis:
   - Avant de passer à la version 2.7, il est important de faire exécuter le code PrepareSwitchPre2.7VersionToEnglish qui migre la version française à du code anglicisé. Le but de cette anglicisation est de rende ce code ouvert plus accessible à un large auditoire. NE PAS l'exécuter si c'est une nouvelle installation dont la version est égale ou supérieur à 2.7.
   - La version 2.7 fait aussi l'objet de modifications importantes, dûes à un bug de la commande "Select create_date From Sys.Dm_XE_Sessions" qui retourne une valeur de create_date qui dérive avec le temps. La solution a heureusement simplificatrice du code. Cette date a été remplacée par la date du premier évènement d'un fichier de trace quand le event_sequence est 1. Cela donne des avantages de performance au Logon trigger qui ne consulte plus Sys.Dm_XE_Sessions à chaque login qui se fait. Il ne transfère plus cette valeur non plus dans le user_event qu'il génère et n'a plus a être récupéré par la procédure qui combine les informations de login aux requêtes.
   - D'autres ajustements ont été faits pour rendre le code plus facile à diagnostiquer en cas de problème, notamment par des courriels informatifs, et aussi des tests de conformité d'environnement réguliers.
+
+  **Version 2.7.1** : 
+- Lire le commentaire de la version 2.7, si ce n'est pas une nouvelle installation.
+- Un correctif rapide a été déployé pour configurer le login trigger avec les bons privilèges, afin d'éviter d'empêcher les utilisateurs non-sysadmin de se connecter.
+- Les tests ont été ajustés pour valider un éventuel manque de privilèges empêchant un login.
+- La quantité de données supprimée dans dbo.FullAudit a été limitée pour éviter des transactions inutilement volumineuses. Cette précaution vise à permettre la libération de l'espace du journal de transactions par les sauvegardes du log, notamment en cas de résidus laissés par une version antérieure.
