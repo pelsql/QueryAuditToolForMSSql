@@ -153,7 +153,7 @@ If COL_LENGTH ('dbo.FullAudit', 'writes') IS NULL
 
 If COL_LENGTH ('dbo.FullAudit', 'row_count') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add row_count BigIntt
+  ALTER Table dbo.FullAudit Add row_count BigInt
 
 If COL_LENGTH ('dbo.FullAudit', 'physical_reads') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
