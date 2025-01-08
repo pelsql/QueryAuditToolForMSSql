@@ -1,17 +1,20 @@
 ﻿/*
-FullQryAudit Version 2.7.1 Repository https://github.com/pelsql/QueryAuditToolForMSSql
-Pour obtenir la version la plus récente ouvrir le lien ci-dessous 
-(To obtain the most recent version go to this link below)
-https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
 -- -----------------------------------------------------------------------------------
--- ADJUST ADMIN OTIONS BEFORE RUNNING THIS SCRIPT
--- Search for: -- Admin config options to configure
--- This install is designed to keep existing data. For a full restart, suppress FullQryAudit database
+-- ADJUST ADMIN OPTIONS ON THE FIRST RUN BEFORE EXECUTING THIS SCRIPT (refer to #YourConfig).  
+-- The options will be saved, so future upgrades will not require reconfiguration.  
+-- This installation script is designed to preserve existing data.  
+-- For a full reset, drop the `FullQryAudit` database.
 
--- AVANT DE DÉMARRER CE SCRIPT AJUSTER LES OPTIONS ADMINISTRATIVES
--- Chercher: -- Admin config options to configure
--- L'installation préserve le data qui existe déjà. Pour un vrai redémarrage, supprimer FullQryAudit
+-- AJUSTEZ LES OPTIONS ADMIN LORS DU PREMIER LANCEMENT AVANT D'EXÉCUTER CE SCRIPT (voir #YourConfig).  
+-- Les options seront sauvegardées, donc les mises à niveau futures n'exigeront pas de nouvelle configuration.  
+-- Ce script d'installation est conçu pour conserver les données existantes.  
+-- Pour un redémarrage complet, supprimez la base de données `FullQryAudit`.
 -- -----------------------------------------------------------------------------------
+
+FullQryAudit Version 2.8 Repository https://github.com/pelsql/QueryAuditToolForMSSql
+To obtain the most recent version go to this link below
+(Pour obtenir la version la plus récente ouvrir le lien ci-dessous)
+https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
 -------------------------------------------------------------------------------------------------------
 FullQryAudit : Tool to produce managed audit of SQL queries by the mean of a SQL Server database
 Author       : Maurice Pelchat
@@ -28,6 +31,27 @@ Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/
 -- This table contains the version number of this script.
 -- It allows the creation of the view dbo.version later in the script once the database is created.
 Drop table if exists #version; Select Version='2.7.1' into #version
+------------------------------------------------------------------------------------------------------------------
+-- Will Register your config in the database to be created
+-- If this is an update and was done in a previous install, leave it unchanged.
+-- If FullQryAudit.dbo.ConfigMemory already exists this won't be done, and will be ignored.
+-- If you want to RESET parameters, drop table dbo.ConfigMemory in FullQryAudit, and set them here.
+------------------------------------------------------------------------------------------------------------------
+Drop table if Exists #YourConfig
+If OBJECT_ID('FullQryAudit.dbo.ConfigMemory') IS NULL 
+  Select 
+    -- this space is divided in n 40Meg trace files, from which max_rollover_files param 
+    -- is computed for the extended event file target.
+    MaxSpaceInGB_ForExEventSessTargetFiles=70 
+  , JobName='FullQryAudit' -- name of job / extended event session, not for database
+  , RootAboveDir='D:\YourDir\'  -- directory that contains the directory where the trace file are stored ex: L:\Temp\
+  , EMailForAlert='YourSqlAdmin@yourDomain.Com' -- domain to show in administrative error message for Audit ex: JoeAdmin@MyCie.com
+  , mailserver_name = '1.0.0.1' -- Address of the mail server to use for administrative tasks ex: 127.0.0.1 or SomeEmailSrv
+  , SmtpPort = 25 -- port of the mail server to use for administrative tasks ex: usually the default 
+  , enable_ssl = 0 -- enable ssl to communicate with mail server to use for administrative tasks ex:
+  , EmailUsername = NULL -- (leave as is for anonymous login)
+  , EmailPassword = NULL -- (leave as is for anonymous login)
+  Into #YourConfig
 Go
 Use tempdb
 go
@@ -44,6 +68,19 @@ GO
 Use FullQryAudit
 GO
 DROP TRIGGER IF EXISTS LogonFullQryAuditTrigger ON ALL SERVER;
+GO
+-- If dbo.configMemory is there, no need to create it. User already choose its params.
+If OBJECT_ID('FullQryAudit.dbo.ConfigMemory') IS NULL
+  Select * Into dbo.ConfigMemory 
+  From #YourConfig
+  Where 
+      RootAboveDir <> 'Drive:\YourDir\'  -- shows that the user didn't set it
+  And EMailForAlert <> 'YourSqlAdmin@yourDomain.Com' -- shows that the user didn't set it
+  And mailserver_name <> '1.0.0.1' -- shows that the user didn't set it
+GO
+-- If table is empty, this means by the previous conditions, that admin config wasn't set. See #YourConfig.
+If Not Exists (Select * From FullQryAudit.dbo.ConfigMemory)
+  Raiserror ('Admin options were never initially set, See #YourConfig.', 20, 1) With Log
 GO
 -- This function dynamically replaces placeholders in a template string.
 -- It is used for generating SQL statements or configurations by substituting 
@@ -101,18 +138,16 @@ Select
 From 
   (
   Select 
-
-    -- Admin config options to configure
-    MaxSpaceInGB_ForExEventSessTargetFiles=70
-  , JobName='FullQryAudit' -- name of job / extended event session, not for database
-  , RootAboveDir='D:\_Tmp\'  -- directory that contains the directory where the trace file are stored
-  , EMailForAlert='admin@yourDomain.Com' -- domain to show in administrative error message for Audit
-  , mailserver_name = '127.0.0.1' -- Address of the mail server to use for administrative tasks
-  , SmtpPort = 25 -- port of the mail server to use for administrative tasks
-  , enable_ssl = 0 -- enable ssl to communicate with mail server to use for administrative tasks
-  , EmailUsername = NULL -- (leave as is for anonymous login)
-  , EmailPassword = NULL -- (leave as is for anonymous login)
-    -- End of Admin config options to configure
+    -- Admin config options configured in dbo.ConfigMemory
+    CM.MaxSpaceInGB_ForExEventSessTargetFiles
+  , CM.JobName -- name of job / extended event session, not for database
+  , CM.RootAboveDir -- directory that contains the directory where the trace file are stored
+  , CM.EMailForAlert -- domain to show in administrative error message for Audit
+  , CM.mailserver_name -- Address of the mail server to use for administrative tasks
+  , CM.SmtpPort -- port of the mail server to use for administrative tasks
+  , CM.enable_ssl -- enable ssl to communicate with mail server to use for administrative tasks
+  , CM.EmailUsername -- (leave as is for anonymous login)
+  , CM.EmailPassword -- (leave as is for anonymous login)
 
   , LostFileMsgPrefix='Lost audit file: '
   , ErrMsgTemplate=
@@ -121,6 +156,7 @@ From
  -- Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#
  ----------------------------------------------------------------------------------------------'
   , ErrMsgTemplateShort=' Msg: #ErrMessage# Error: #ErrNumber# Severity: #ErrSeverity# State: #ErrState##atPos#'
+  From dbo.ConfigMemory as CM
   ) as EC
   -- Valeur calculées
   CROSS APPLY (Select Dir=JobName) as Dir

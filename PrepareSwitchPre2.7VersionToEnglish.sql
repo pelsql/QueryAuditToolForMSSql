@@ -39,7 +39,7 @@ Use AuditReq
 GO
 IF EXISTS (select * from sys.server_triggers where name = 'LogonAuditReqTrigger')
 Begin
-  Exec ('DISABLE TRIGGER LogonAuditReqTrigger ON ALL SERVER;')
+  Exec ('DROP TRIGGER LogonAuditReqTrigger ON ALL SERVER;')
 End
 GO
 IF USER_ID('AuditReqUser') IS NOT NULL 
@@ -47,11 +47,6 @@ IF USER_ID('AuditReqUser') IS NOT NULL
 GO
 IF SUSER_SID('AuditReqUser') IS NOT NULL 
     DROP LOGIN AuditReqUser;
-GO
-IF EXISTS (select * from sys.server_triggers where name = 'LogonAuditReqTrigger')
-Begin
-  Exec ('DROP TRIGGER LogonAuditReqTrigger ON ALL SERVER;')
-End
 GO
 If Exists (Select * From Sys.dm_xe_sessions where name = 'AuditReq')
   ALTER EVENT SESSION AuditReq ON SERVER STATE = STOP
@@ -75,16 +70,16 @@ Drop table if exists dbo.EvenementsTraites
 --------------------------------------------------------------------------------------------
 
 If object_id('dbo.EvenementsTraitesSuivi') IS NOT NULL
-  Exec Sp_rename 'dbo.EvenementsTraitesSuivi', 'ExtExtEvProcessedChkPoint'
+  Exec Sp_rename 'dbo.EvenementsTraitesSuivi', 'ExtEvProcessedChkPoint'
 GO
 -- Upgrade to version 2.50: Remove this code after the upgrade since it applies to only one customer.
-If INDEXPROPERTY(Object_id('dbo.ExtExtEvProcessedChkPoint'), 'iPasseFileName', 'isClustered') IS NOT NULL
-  Drop Index iPasseFileName On dbo.ExtExtEvProcessedChkPoint;
-If COL_LENGTH ('dbo.ExtExtEvProcessedChkPoint', 'NbTotalFich') IS NOT NULL 
+If INDEXPROPERTY(Object_id('dbo.ExtEvProcessedChkPoint'), 'iPasseFileName', 'isClustered') IS NOT NULL
+  Drop Index iPasseFileName On dbo.ExtEvProcessedChkPoint;
+If COL_LENGTH ('dbo.ExtEvProcessedChkPoint', 'NbTotalFich') IS NOT NULL 
   ALTER Table dbo.ExtEvProcessedChkPoint Drop Column NbTotalFich;
-If COL_LENGTH ('dbo.ExtExtEvProcessedChkPoint', 'Passe') IS NOT NULL 
+If COL_LENGTH ('dbo.ExtEvProcessedChkPoint', 'Passe') IS NOT NULL 
   ALTER Table dbo.ExtEvProcessedChkPoint Drop Column Passe;
-If COL_LENGTH ('dbo.ExtExtEvProcessedChkPoint', 'File_Seq') IS NOT NULL 
+If COL_LENGTH ('dbo.ExtEvProcessedChkPoint', 'File_Seq') IS NOT NULL 
   ALTER Table dbo.ExtEvProcessedChkPoint Drop Column File_Seq;
 GO
 -- Rename column for clarity, applicable to version 2.6.2 changes.
@@ -110,8 +105,16 @@ GO
 If Object_Id('dbo.HistoriqueConnexions') IS Not NULL
   Exec Sp_rename 'dbo.HistoriqueConnexions', 'ConnectionsHistory'
 GO
+-- Add 'FirstEventTimeOfSession' column if missing, with a default value.
+If COL_LENGTH ('dbo.ConnectionsHistory', 'FirstEventTimeOfSession') IS NULL 
+   And OBJECT_ID('dbo.ConnectionsHistory') IS NOT NULL
+Begin
+  ALTER Table dbo.ConnectionsHistory Add FirstEventTimeOfSession Datetime Not NULL Default '20000101';
+End;
+GO
+
 If INDEXPROPERTY(object_id('Dbo.ConnectionsHistory'), 'PK_HistoriqueConnexions', 'IsClustered') IS NOT NULL
-  Alter table Dbo.ConnectionHistory Drop constraint PK_HistoriqueConnexions
+  Alter table Dbo.ConnectionsHistory Drop constraint PK_HistoriqueConnexions
 
 If INDEXPROPERTY(object_id('Dbo.ConnectionsHistory'), 'iExtendedSession', 'IsClustered') IS NOT NULL
   Drop index iExtendedSession On Dbo.ConnectionsHistory
@@ -121,8 +124,14 @@ If COL_LENGTH ('Dbo.ConnectionsHistory', 'ExtendedSessionCreateTime') IS Not NUL
 
 If INDEXPROPERTY(object_id('Dbo.ConnectionsHistory'), 'iHistoriqueConnexions', 'IsClustered') IS NOT NULL
   DROP INDEX iHistoriqueConnexions ON Dbo.ConnectionsHistory
-
 --------------------------------------------------------------------------
+While (1=1)
+Begin
+    Delete TOP (1000000) From dbo.AuditComplet
+    Where event_time < DATEADD(dd, -45, getdate()) 
+    If @@ROWCOUNT=0 Break Else Print 'Un autre delete'
+End
+GO
 If Object_id('dbo.AuditComplet') IS NOT NULL
   Exec SP_Rename 'dbo.AuditComplet', 'FullAudit'
 GO
@@ -152,6 +161,10 @@ If COL_LENGTH ('dbo.FullAudit', 'physical_reads') IS NULL
 
 If INDEXPROPERTY(object_id('dbo.FullAudit'), 'iSeqEvents', 'IsUnique') IS Not NULL
   Drop Index iSeqEvents On dbo.FullAudit 
+
+If COL_LENGTH ('dbo.FullAudit', 'ExtendedSessionCreateTime') IS NULL 
+  ALTER Table dbo.FullAudit Add ExtendedSessionCreateTime datetime NULL
+GO
   
 If COL_LENGTH ('dbo.FullAudit', 'ExtendedSessionCreateTime') IS Not NULL 
   Exec sp_rename 'dbo.FullAudit.ExtendedSessionCreateTime', 'FirstEventTimeOfSession'
@@ -196,7 +209,9 @@ From
     (Select t0=
     N'ALTER DATABASE #NewDbName# MODIFY FILE (NAME = |#Ln#|, FILENAME = |#nPn#|);'+crlf+
     N'ALTER DATABASE #NewDbName# MODIFY FILE (NAME = |#Ln#|, NEWNAME=|#nLn#|);'+crLf+
-    N'EXEC XP_CMDSHELL |cmd /c REN "#Pn#" #nLn#.#Ext#|, NO_OUTPUT'+crLf
+    N'ALTER DATABASE #NewDbName# SET OFFLINE;'+crLf+
+    N'EXEC XP_CMDSHELL |cmd /c REN "#Pn#" #nLn#.#Ext#|, NO_OUTPUT'+crLf+
+    N'ALTER DATABASE #NewDbName# SET ONLINE;'+crLf
     ) as t0
     CROSS APPLY
     (
@@ -207,7 +222,7 @@ From
       CROSS APPLY (Select nLn=REPLACE(N.Ln, OldDbName, NewDbName)) as nLn
       CROSS APPLY (Select nPn=REPLACE(N.pn, OldDbName, NewDbName)) as nPn
       CROSS APPLY (Select ext=IIF(type_desc='ROWS', 'Mdf', 'Ldf')) as Ext
-    WHERE database_id = DB_ID(DbIdFound)
+    WHERE database_id = DbIdFound
     ) as F
     CROSS APPLY (Select t1=replace(t0, '#Ln#', F.Ln)) as t1
     CROSS APPLY (Select t2=replace(t1, '#nPn#', F.nPn)) as t2  
@@ -215,8 +230,6 @@ From
     CROSS APPLY (Select t4=replace(t3, '#Pn#', F.Pn)) as t4
     CROSS APPLY (Select t5=replace(t4, '#Ext#', F.Ext)) as t5
     CROSS APPLY (Select Sql0=t5) as Sql0
-  UNION All
-  Select Sql0 = 'Alter Database #NewDbName# Set ONLINE;'+crLf
   UNION All
   Select Sql0 = 'Alter Database #NewDbName# Set Multi_User With Rollback immediate;'+CrLf
   ) as Sql0
