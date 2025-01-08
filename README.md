@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.7.1 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.8 **[Version Française](#queryaudittoolformssql-français)**
 
 Click **[here](#version-history)** for Version History
 
@@ -128,7 +128,7 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.7.1
+Version 2.8
 
 Cliquer **[ici](#historique-des-versions)** pour l'historique des versions
 
