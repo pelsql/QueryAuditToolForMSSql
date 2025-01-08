@@ -176,7 +176,7 @@ If Object_id('dbo.LogTraitementAudit') IS NOT NULL
 GO
 Drop table if exists dbo.PipelineDeTraitementFinalDAudit
 GO
-If Object_id('dbo..XpCmdShellWasOff') IS NULL
+If Object_id('dbo.XpCmdShellWasOff') IS NULL
 Begin
   Create Table dbo.XpCmdShellWasOff (i Int)
 End
