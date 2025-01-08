@@ -141,23 +141,23 @@ If COL_LENGTH ('dbo.FullAudit', 'DurMicroSec') IS NULL
 
 If COL_LENGTH ('dbo.FullAudit', 'cpu_time') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add cpu_time Int
+  ALTER Table dbo.FullAudit Add cpu_time BigInt
 
 If COL_LENGTH ('dbo.FullAudit', 'logical_reads') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add logical_reads Int
+  ALTER Table dbo.FullAudit Add logical_reads BigInt
 
 If COL_LENGTH ('dbo.FullAudit', 'writes') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add writes Int
+  ALTER Table dbo.FullAudit Add writes BigInt
 
 If COL_LENGTH ('dbo.FullAudit', 'row_count') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add row_count Int
+  ALTER Table dbo.FullAudit Add row_count BigIntt
 
 If COL_LENGTH ('dbo.FullAudit', 'physical_reads') IS NULL 
   And OBJECT_ID('dbo.FullAudit') IS NOT NULL
-  ALTER Table dbo.FullAudit Add physical_reads Int
+  ALTER Table dbo.FullAudit Add physical_reads BigInt
 
 If INDEXPROPERTY(object_id('dbo.FullAudit'), 'iSeqEvents', 'IsUnique') IS Not NULL
   Drop Index iSeqEvents On dbo.FullAudit 

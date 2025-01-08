@@ -912,11 +912,11 @@ Begin
   , FirstEventTimeOfSession DateTime
   , event_sequence BigInt 
   , DurMicroSec BigInt NULL
-  , cpu_time Int NULL
-  , logical_reads Int NULL
-  , writes Int NULL
-  , row_count Int NULL 
-  , physical_reads Int NULL
+  , cpu_time BigInt NULL
+  , logical_reads BigInt NULL
+  , writes BigInt NULL
+  , row_count BigInt NULL 
+  , physical_reads BigInt NULL
   ) 
 End
 
