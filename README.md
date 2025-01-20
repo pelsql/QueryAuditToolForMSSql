@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.8 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.8.1 **[Version Française](#queryaudittoolformssql-français)**
 
 Click **[here](#version-history)** for Version History
 
@@ -51,7 +51,7 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 
 ---
 
-**Version 2.8.1** :  
+- **Version 2.8.1** :  
   - Review the comments for version 2.7 if this is not a new installation. Intermediate versions between 2.7 and 2.8 can be ignored.  
   - Fix. Some XML data must be converted to bigInt instead of Int
 
@@ -183,24 +183,18 @@ Tests de qualité réussis:
 
 ---
 
-**Version 2.8.1** :  
-- Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et celle-ci.
-- Fix. L'extraction xml de certaines données devait se faire en mode Bigint
-- Le script `PrepareSwitchPre2.7VersionToEnglish` doit être exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
-- Cette version introduit la capacité de mémoriser les paramètres administratifs, rendant inutile leur réinitialisation lors des futures mises à jour sur les serveurs où le script a déjà été exécuté. L'objectif est de simplifier les mises à jour en permettant aux utilisateurs de récupérer et d'exécuter le dernier script sans avoir à reconfigurer les paramètres administratifs. Consultez #YourConfig près du début du script et le commentaire explicatif ci-dessus pour plus de détails.
-
----
-**Version 2.8** :  
-- Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et 2.8.  
-- Le script `PrepareSwitchPre2.7VersionToEnglish` doit être exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
-- Cette version introduit la capacité de mémoriser les paramètres administratifs, rendant inutile leur réinitialisation lors des futures mises à jour sur les serveurs où le script a déjà été exécuté. L'objectif est de simplifier les mises à jour en permettant aux utilisateurs de récupérer et d'exécuter le dernier script sans avoir à reconfigurer les paramètres administratifs. Consultez #YourConfig près du début du script et le commentaire explicatif ci-dessus pour plus de détails.
+- **Version 2.8.1** :  
+  - Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et celle-ci.
+  - Fix. L'extraction xml de certaines données devait se faire en mode Bigint
+  - Le script `PrepareSwitchPre2.7VersionToEnglish` doit être exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
+  - Cette version introduit la capacité de mémoriser les paramètres administratifs, rendant inutile leur réinitialisation lors des futures mises à jour sur les serveurs où le script a déjà été exécuté. L'objectif est de simplifier les mises à jour en permettant aux utilisateurs de récupérer et d'exécuter le dernier script sans avoir à reconfigurer les paramètres administratifs. Consultez #YourConfig près du début du script et le commentaire explicatif ci-dessus pour plus de détails.
 
 ---
 
-**Version 2.8** :  
-- Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et 2.8.  
-- Le script `PrepareSwitchPre2.7VersionToEnglish` doit être exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
-- Cette version introduit la capacité de mémoriser les paramètres administratifs, rendant inutile leur réinitialisation lors des futures mises à jour sur les serveurs où le script a déjà été exécuté. L'objectif est de simplifier les mises à jour en permettant aux utilisateurs de récupérer et d'exécuter le dernier script sans avoir à reconfigurer les paramètres administratifs. Consultez #YourConfig près du début du script et le commentaire explicatif ci-dessus pour plus de détails.
+- **Version 2.8** :  
+  - Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et 2.8.  
+  - Le script `PrepareSwitchPre2.7VersionToEnglish` doit être exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
+  - Cette version introduit la capacité de mémoriser les paramètres administratifs, rendant inutile leur réinitialisation lors des futures mises à jour sur les serveurs où le script a déjà été exécuté. L'objectif est de simplifier les mises à jour en permettant aux utilisateurs de récupérer et d'exécuter le dernier script sans avoir à reconfigurer les paramètres administratifs. Consultez #YourConfig près du début du script et le commentaire explicatif ci-dessus pour plus de détails.
 
 ---
 

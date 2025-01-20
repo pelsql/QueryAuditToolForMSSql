@@ -1925,4 +1925,11 @@ select event_time, FirstEventTimeOfSession, event_sequence, Client_net_address,s
 from dbo.FullAudit 
 where Client_net_address like 'Cur%'
 Order by event_time desc
+
+Select DateEvent, WeekDay, nbQry=Count(*)
+From 
+  dbo.FullAudit with (nolock)
+  CROSS APPLY (Select jour=cast(event_time as date)) as jour
+  CROSS APPLY (Select journee=datename(dw, jour)) as journee
+Group by jour, journee
 */
