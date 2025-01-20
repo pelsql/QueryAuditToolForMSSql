@@ -1452,11 +1452,11 @@ Begin
       --, line_number = Tmp.event_data.value('(event/data[@name="line_number"]/value)[1]', 'int') 
       , statement = Tmp.event_data.value('(event/data[@name="statement"]/value)[1]', 'nvarchar(max)') 
       , DurMicroSec = Tmp.event_data.value('(event/data[@name="duration"]/value)[1]', 'bigint')
-      , cpu_time = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'int')
-      , logical_reads = Tmp.event_data.value('(event/data[@name="logical_reads"]/value)[1]', 'int')
-      , writes = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'int')
-      , row_count = Tmp.event_data.value('(event/data[@name="row_count"]/value)[1]', 'int')
-      , physical_reads = Tmp.event_data.value('(event/data[@name="physical_reads"]/value)[1]', 'int')
+      , cpu_time = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'bigint')
+      , logical_reads = Tmp.event_data.value('(event/data[@name="logical_reads"]/value)[1]', 'bigint')
+      , writes = Tmp.event_data.value('(event/data[@name="cpu_time"]/value)[1]', 'bigint')
+      , row_count = Tmp.event_data.value('(event/data[@name="row_count"]/value)[1]', 'bigint')
+      , physical_reads = Tmp.event_data.value('(event/data[@name="physical_reads"]/value)[1]', 'bigint')
       From 
         -- we don't keep connection events, since their info is merged with Sql events
         (Select * from #Tmp as Tmp Where Tmp.event_name <> 'user_event') as Tmp
