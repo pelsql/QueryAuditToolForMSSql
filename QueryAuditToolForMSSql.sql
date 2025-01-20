@@ -30,7 +30,7 @@ Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/
 -- Register a temporary table.
 -- This table contains the version number of this script.
 -- It allows the creation of the view dbo.version later in the script once the database is created.
-Drop table if exists #version; Select Version='2.8' into #version
+Drop table if exists #version; Select Version='2.8.1' into #version
 ------------------------------------------------------------------------------------------------------------------
 -- Will Register your config in the database to be created
 -- If this is an update and was done in a previous install, leave it unchanged.
