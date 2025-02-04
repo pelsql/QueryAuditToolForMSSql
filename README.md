@@ -1,6 +1,6 @@
 # QueryAuditToolForMSSQL
 
-Version 2.8.1 **[Version Française](#queryaudittoolformssql-français)**
+Version 2.8.2 **[Version Française](#queryaudittoolformssql-français)**
 
 Click **[here](#version-history)** for Version History
 
@@ -24,7 +24,7 @@ None of the existing SQL audit tools address this issue:
 - Reliable query auditing requires recording them on disk, allowing for later retrieval. Other audit targets may result in lost events.
 - To ensure data retention, it is essential to manage audit files programmatically rather than allowing them to disappear with the "rollover" option. Without programmatic management, the disk may become full. The script handles the deletion of files whose contents have been processed.
 - The continuous automation of file content retrieval provides a user-friendly interface in the form of a SQL table rather than requiring post-processing via XQuery in SQL. The query information is then reconciled with that intercepted by the login trigger.
-- The final result is stored in a table, **dbo.AuditComplet**, within the **AuditReq** database. This storage is limited to 45 days to prevent indefinite growth of the database. Therefore, it is important to perform regular SQL backups.
+- The final result is stored in a table, **dbo.FullAudit**, within the **FullQryAudit** database. This storage is limited to 45 days to prevent indefinite growth of the database. Therefore, it is important to perform regular SQL backups.
 
 This tool, deployable in a **[single SQL script available here](https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql)**, integrates several SQL automations for query auditing.
 
@@ -33,8 +33,8 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 - It logs the audit of queries, as well as the query's IP origin, the user who executed it, the time of completion, the program that launched it, and the database context in which it was executed.
 - The trace is recorded in external files, retrieved and processed before being inserted into the database.
 - The SQL script manages processed audit files and deletes them to avoid excessive space consumption.
-- The final trace is stored in the **dbo.AuditComplet** table of the **AuditReq** database. This storage allows flexible querying using SQL filters.
-- The trace processing task runs continuously via a SQL Agent job, scheduled to start with the server. The associated log is also stored in the **AuditReq** database. In case of interruption, the process is logged as an error in the SQL Agent job log, and the task is automatically restarted.
+- The final trace is stored in the **dbo.FullAudit** table of the **FullQryAudit** database. This storage allows flexible querying using SQL filters.
+- The trace processing task runs continuously via a SQL Agent job, scheduled to start with the server. The associated log is also stored in the **FullQryAudit** database. In case of interruption, the process is logged as an error in the SQL Agent job log, and the task is automatically restarted.
 - The process retains the last 45 days of audit for immediate access. Long-term retention relies on regular backups, which are the responsibility of the DBA.
 - Data integrity follows standard database management rules, such as choosing the recovery model and performing log backups. By default, the recovery model is full, requiring regular log backups, as is typically the case for most production databases.
 
@@ -49,6 +49,12 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 
 # Version History
 
+---
+
+- **Version 2.8.2**:  
+  - Read the comments from version 2.7 if this is not a new installation. Ignore intermediate versions between 2.7 and this one.  
+  - The script `PrepareSwitchPre2.7VersionToEnglish` must ONLY be executed for users migrating from a version earlier than 2.7.  
+  - This version improves the method for modifying administrative parameters. See **"OptionsToSetByUser"** at the beginning of the script. For more details, refer to the release notes for version 2.8.1.
 ---
 
 - **Version 2.8.1** :  
@@ -80,7 +86,7 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 ---
 
 - **Version 2.6.2**:  
-  - Code has been added to address table compression. When upgrading from previous versions, avoid reapplying compression on tables that are already compressed, as SQL Server does not automatically verify the current compression state. Reapplying compression can be resource-intensive for large tables, particularly for `dbo.AuditComplet`.
+  - Code has been added to address table compression. When upgrading from previous versions, avoid reapplying compression on tables that are already compressed, as SQL Server does not automatically verify the current compression state. Reapplying compression can be resource-intensive for large tables, particularly for `dbo.FullAudit`.
 
 ---
 
@@ -134,8 +140,7 @@ This tool, deployable in a **[single SQL script available here](https://raw.gith
 
 # QueryAuditToolForMSSQL (Français)
 
-Version 2.8.1
-
+Version 2.8.2
 Cliquer **[ici](#historique-des-versions)** pour l'historique des versions
 
 ## Pourquoi un autre outil d'Audit de requête?
@@ -158,7 +163,7 @@ Aucun des outils d'audit SQL existants ne résout ce problème :
 - L'audit infaillible des requêtes nécessite leur enregistrement sur disque, ce qui permet une récupération ultérieure. Les autres cibles de l'audit permettent de "perdre" des évènements.
 - Pour garantir la conservation des données, il est essentiel de gérer les fichiers d'audit manuellement, plutôt que de les laisser disparaître avec l'option de "rollover". Sans gestion manuelle, on risque de saturer le disque. Le script se charge de supprimer les fichiers dont le contenu a été traité.
 - La récupération du contenu de ces fichiers est automatisée en continu, offrant une interface conviviale sous forme de table SQL plutôt que nécessitant un traitement postérieur via XQuery en SQL. L'information sur la requête est ensuite conciliée avec celle interceptée par le déclencheur de logon.
-- Le résultat final est stocké dans une table, **dbo.AuditComplet**, au sein de la base de données **AuditReq**. Ce stockage est limité à une période de 45 jours pour éviter une croissance indéfinie de la base. Il est donc important d'effectuer des sauvegardes SQL régulières.
+- Le résultat final est stocké dans une table, **dbo.FullAudit**, au sein de la base de données **FullQryAudit**. Ce stockage est limité à une période de 45 jours pour éviter une croissance indéfinie de la base. Il est donc important d'effectuer des sauvegardes SQL régulières.
 
 Cet outil, déployable en un **[seul script SQL disponible ici](https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql)**, intègre plusieurs automatismes SQL pour l'audit des requêtes.
 
@@ -167,7 +172,7 @@ Cet outil, déployable en un **[seul script SQL disponible ici](https://raw.gith
 - Il consigne l'audit des requêtes, ainsi que l'origine IP de la requête, l'utilisateur qui l'a exécutée, le moment de sa terminaison, le programme l'ayant lancée et le contexte de la base de données.
 - La trace est enregistrée dans des fichiers externes, récupérés et traités avant d'être insérés dans la base de données.
 - Le script SQL gère les fichiers d'audit traités et les supprime pour éviter une consommation excessive d'espace.
-- La trace finale est stockée dans la table dbo.AuditComplet de la base de données AuditReq. Ce stockage permet une interrogation flexible grâce aux filtres SQL.
+- La trace finale est stockée dans la table dbo.FullAudit de la base de données AuditReq. Ce stockage permet une interrogation flexible grâce aux filtres SQL.
 - Le processus de traitement de la trace est exécuté en continu via une tâche de l'Agent SQL, planifiée pour démarrer avec le serveur. Le journal associé est également stocké dans la base AuditReq. En cas d'interruption, le processus est consigné comme une erreur et redémarré automatiquement.
 - Le processus conserve les 45 derniers jours d'audit pour un accès immédiat. La conservation à long terme repose sur des sauvegardes régulières, à la charge du DBA.
 - L'intégrité des données suit les règles standard de gestion de bases de données, telles que le choix du mode de récupération et les sauvegardes de journaux. Par défaut, le mode de récupération est complet, nécessitant des sauvegardes régulières des journaux.
@@ -182,6 +187,11 @@ Tests de qualité réussis:
 # Historique des versions 
 
 ---
+
+- **Version 2.8.2** :  
+  - Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et celle-ci.
+  - Le script `PrepareSwitchPre2.7VersionToEnglish` doit être SEULEMENT exécuté pour les utilisateurs migrant d'une version antérieure à 2.7.  
+  - Cette version améliore la méthode de modification des paramètres administratifs. Voir "OptionsToSetByUser" en début de script. Pour plus d'explications consulter le release de la version 2.8.1
 
 - **Version 2.8.1** :  
   - Lire les commentaires de la version 2.7 si ce n'est pas une nouvelle installation. Ignorer les versions intermédiaires entre 2.7 et celle-ci.
@@ -214,7 +224,7 @@ Tests de qualité réussis:
 ---
 
 - **Version 2.6.2** :  
-  - Du code a été ajouté pour gérer la compression des tables lors d'une mise à niveau. Lors d'une mise à niveau, on évitera de réappliquer la compression sur des tables déjà compressées, car SQL Server ne vérifie pas automatiquement l’état de compression actuel. Réappliquer la compression peut être coûteux en ressources pour les grandes tables, notamment pour `dbo.AuditComplet`.
+  - Du code a été ajouté pour gérer la compression des tables lors d'une mise à niveau. Lors d'une mise à niveau, on évitera de réappliquer la compression sur des tables déjà compressées, car SQL Server ne vérifie pas automatiquement l’état de compression actuel. Réappliquer la compression peut être coûteux en ressources pour les grandes tables, notamment pour `dbo.FullAudit`.
 
 ---
 

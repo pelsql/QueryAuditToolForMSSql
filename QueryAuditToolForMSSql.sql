@@ -1,17 +1,58 @@
 ﻿/*
--- -----------------------------------------------------------------------------------
--- ADJUST ADMIN OPTIONS ON THE FIRST RUN BEFORE EXECUTING THIS SCRIPT (refer to #YourConfig).  
--- The options will be saved, so future upgrades will not require reconfiguration.  
--- This installation script is designed to preserve existing data.  
--- For a full reset, drop the `FullQryAudit` database.
+-------------------------------------------------------------------------------------------------------------------------------------
+-- Adjust below database DeploymentName by doing a full search and replace on string FullQryAudit by the name of your choice 
+-- Also Initialize in CTE "OptionsToSetByUser" parameters specific to your environnement (file location, email alert, mail server to use...)
 
--- AJUSTEZ LES OPTIONS ADMIN LORS DU PREMIER LANCEMENT AVANT D'EXÉCUTER CE SCRIPT (voir #YourConfig).  
--- Les options seront sauvegardées, donc les mises à niveau futures n'exigeront pas de nouvelle configuration.  
--- Ce script d'installation est conçu pour conserver les données existantes.  
--- Pour un redémarrage complet, supprimez la base de données `FullQryAudit`.
+-- On an existing installation, don't do it again. To modify, edit table dbo.ConfigMemory instead
+-- see licence notice and project coordinate after this ...
 -- -----------------------------------------------------------------------------------
-
-FullQryAudit Version 2.8 Repository https://github.com/pelsql/QueryAuditToolForMSSql
+*/
+-- The database is set with FULL recovery mode, and file growth settings are adjusted to accommodate potential large audit logs.
+USE TEMPDB
+If DB_ID('FullQryAudit') IS NULL 
+Begin 
+  CREATE DATABASE FullQryAudit
+  alter DATABASE FullQryAudit Set recovery FULL
+  alter database FullQryAudit modify file ( NAME = N'FullQryAudit', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
+  alter database FullQryAudit modify file ( NAME = N'FullQryAudit_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
+End
+GO
+Use FullQryAudit
+If Object_Id('Dbo.ConfigMemory') IS NULL -- not done yet
+Begin
+  With 
+  OptionsToSetByUser As
+  (
+  Select
+    -- value in GB to Set for temporary space for trace files, this is an integer
+    -- this space is divided in n 40Meg trace files, from which max_rollover_files param 
+    -- is computed for the extended event file target.
+    MaxSpaceInGB_ForExEventSessTargetFiles=70 
+    -- temporary directory for trace files in which a subdirectory of the same name as DeploymentName will be created:  Ex: L:\Temp\
+    -- Specify the last "\" 
+  , RootAboveDir = 'NotSetYet'
+    -- change to something like 'JoeAdmin@MyCie.com'. This is the mail for administrative error message for Audit ex: 'JoeAdmin@MyCie.com'
+  , EMailForAlert = 'NotSetYet' 
+    -- change to something like 'SomeEmailSrv' which is the email host server to use for administrative tasks alerts 
+  , mailserver_name = 'NotSetYet'
+    -- usual defaults, up to you to change if needed.
+  , SmtpPort = 25 -- port of the mail server to use for administrative tasks ex: usually the default 
+  , enable_ssl = 0 -- enable ssl to communicate with mail server to use for administrative tasks ex:
+  , EmailUsername = NULL -- (leave as is for anonymous login)
+  , EmailPassword = NULL -- (leave as is for anonymous login)
+  )
+  Select *
+  Into Dbo.ConfigMemory
+  From OptionsToSetByUser CROSS APPLY (Select _NotSetYet='NotSetYet') as x 
+  Where RootAboveDir <> _NotSetYet  And EMailForAlert <> _NotSetYet And mailserver_name <> _NotSetYet
+  If @@rowcount = 0
+  Begin
+    Drop table If Exists Dbo.ConfigMemory
+    Raiserror ('Admin options were never initially set, See OptionsToSetByUser above.', 20, 1) With Log
+  End
+End    
+/*
+FullQryAudit Version 2.8.2 Repository https://github.com/pelsql/QueryAuditToolForMSSql
 To obtain the most recent version go to this link below
 (Pour obtenir la version la plus récente ouvrir le lien ci-dessous)
 https://raw.githubusercontent.com/pelsql/QueryAuditToolForMSSql/main/QueryAuditToolForMSSql.sql
@@ -30,57 +71,15 @@ Licence      : BSD-3 https://github.com/pelsql/QueryAuditToolForMSSql/blob/main/
 -- Register a temporary table.
 -- This table contains the version number of this script.
 -- It allows the creation of the view dbo.version later in the script once the database is created.
-Drop table if exists #version; Select Version='2.8.1' into #version
+Drop table if exists #version; Select Version='2.8.2' into #version
 ------------------------------------------------------------------------------------------------------------------
 -- Will Register your config in the database to be created
 -- If this is an update and was done in a previous install, leave it unchanged.
 -- If FullQryAudit.dbo.ConfigMemory already exists this won't be done, and will be ignored.
 -- If you want to RESET parameters, drop table dbo.ConfigMemory in FullQryAudit, and set them here.
 ------------------------------------------------------------------------------------------------------------------
-Drop table if Exists #YourConfig
-If OBJECT_ID('FullQryAudit.dbo.ConfigMemory') IS NULL 
-  Select 
-    -- this space is divided in n 40Meg trace files, from which max_rollover_files param 
-    -- is computed for the extended event file target.
-    MaxSpaceInGB_ForExEventSessTargetFiles=70 
-  , JobName='FullQryAudit' -- name of job / extended event session, not for database
-  , RootAboveDir='D:\YourDir\'  -- directory that contains the directory where the trace file are stored ex: L:\Temp\
-  , EMailForAlert='YourSqlAdmin@yourDomain.Com' -- domain to show in administrative error message for Audit ex: JoeAdmin@MyCie.com
-  , mailserver_name = '1.0.0.1' -- Address of the mail server to use for administrative tasks ex: 127.0.0.1 or SomeEmailSrv
-  , SmtpPort = 25 -- port of the mail server to use for administrative tasks ex: usually the default 
-  , enable_ssl = 0 -- enable ssl to communicate with mail server to use for administrative tasks ex:
-  , EmailUsername = NULL -- (leave as is for anonymous login)
-  , EmailPassword = NULL -- (leave as is for anonymous login)
-  Into #YourConfig
-Go
-Use tempdb
-go
--- If the FullQryAudit database does not exist, it will be created.
--- The database is set with FULL recovery mode, and file growth settings are adjusted to accommodate potential large audit logs.
-If DB_ID('FullQryAudit') IS NULL 
-Begin 
-  CREATE DATABASE FullQryAudit
-  alter DATABASE FullQryAudit Set recovery FULL
-  alter database FullQryAudit modify file ( NAME = N'FullQryAudit', SIZE = 100MB, MAXSIZE = UNLIMITED, FILEGROWTH = 100MB )
-  alter database FullQryAudit modify file ( NAME = N'FullQryAudit_log', SIZE = 100MB , MAXSIZE = UNLIMITED , FILEGROWTH = 100MB )
-End
-GO
-Use FullQryAudit
 GO
 DROP TRIGGER IF EXISTS LogonFullQryAuditTrigger ON ALL SERVER;
-GO
--- If dbo.configMemory is there, no need to create it. User already choose its params.
-If OBJECT_ID('FullQryAudit.dbo.ConfigMemory') IS NULL
-  Select * Into dbo.ConfigMemory 
-  From #YourConfig
-  Where 
-      RootAboveDir <> 'Drive:\YourDir\'  -- shows that the user didn't set it
-  And EMailForAlert <> 'YourSqlAdmin@yourDomain.Com' -- shows that the user didn't set it
-  And mailserver_name <> '1.0.0.1' -- shows that the user didn't set it
-GO
--- If table is empty, this means by the previous conditions, that admin config wasn't set. See #YourConfig.
-If Not Exists (Select * From FullQryAudit.dbo.ConfigMemory)
-  Raiserror ('Admin options were never initially set, See #YourConfig.', 20, 1) With Log
 GO
 -- This function dynamically replaces placeholders in a template string.
 -- It is used for generating SQL statements or configurations by substituting 
@@ -129,7 +128,7 @@ Create Or Alter View Dbo.EnumsAndOptions
 as
 Select 
   MaxFiles
-, EC.RootAboveDir, Dir, EC.JobName, RepFichTrc, PathReadFileTargetPrm, TargetFnCreateEvent, RepFich, MatchFichTrc
+, EC.RootAboveDir, Dir, EC.DeploymentName, RepFichTrc, PathReadFileTargetPrm, TargetFnCreateEvent, RepFich, MatchFichTrc
 , EC.EMailForAlert, EC.mailserver_name, EC.SmtpPort, EC.enable_ssl, EC.EmailUserName, EC.EmailPassword 
 , EC.LostFileMsgPrefix 
 , EC.ErrMsgTemplate
@@ -140,7 +139,7 @@ From
   Select 
     -- Admin config options configured in dbo.ConfigMemory
     CM.MaxSpaceInGB_ForExEventSessTargetFiles
-  , CM.JobName -- name of job / extended event session, not for database
+  , DeploymentName=Db_Name() -- name of job / extended event session set to database name
   , CM.RootAboveDir -- directory that contains the directory where the trace file are stored
   , CM.EMailForAlert -- domain to show in administrative error message for Audit
   , CM.mailserver_name -- Address of the mail server to use for administrative tasks
@@ -159,12 +158,12 @@ From
   From dbo.ConfigMemory as CM
   ) as EC
   -- Valeur calculées
-  CROSS APPLY (Select Dir=JobName) as Dir
+  CROSS APPLY (Select Dir=DeploymentName) as Dir
   CROSS APPLY (Select RepFich=RootAboveDir+Dir) as RootAboveDir
   CROSS APPLY (Select RepFichTrc=RepFich+'\') as RepFichTrc
-  CROSS APPLY (Select MatchFichTrc=JobName+'*.xel') As MatchFichTrc  -- ne pas changer
+  CROSS APPLY (Select MatchFichTrc=DeploymentName+'*.xel') As MatchFichTrc  -- ne pas changer
   CROSS APPLY (Select PathReadFileTargetPrm=RepFichTrc+MatchFichTrc) as PathReadFileTargetPrm
-  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+JobName+'.Xel') as TargetFnCreateEvent
+  CROSS APPLY (Select TargetFnCreateEvent=RepFichTrc+DeploymentName+'.Xel') as TargetFnCreateEvent
   CROSS APPLY (Select MaxFiles=Convert(nvarchar,EC.MaxSpaceInGB_ForExEventSessTargetFiles*1024/40)) as MaxFiles
   CROSS APPLY
   (
@@ -275,7 +274,7 @@ Else
            , (StartES, tpl.TplExSessStart) 
       ) as Tp (action, tp)
       Cross Apply (Select r1=dbo.TemplateReplace(tp, '#TargetFnCreateEvent#', TargetFnCreateEvent) ) as r1
-      Cross Apply (Select Sql=dbo.TemplateReplace(r1, '#MaxFiles#', MaxFiles) ) as Sql
+      Cross Apply (Select Sql=dbo.TemplateReplace(r1, '#MaxFiles#', MaxFiles)  ) as Sql
     ) as ActionRows
   PIVOT (Max(Sql) For Action IN ([StopExtendedSession], [DropExtendedSession], [CreateExtendedSession], [StartExtendedSession])) as PivotTable
   ) as Actions
@@ -290,12 +289,12 @@ If Not Exists
    Select * 
    FROM 
      Dbo.EnumsAndOptions as E 
-     CROSS APPLY sys.dm_os_enumerate_filesystem(RootAboveDir, Dir) as F
+     CROSS APPLY sys.dm_os_enumerate_filesystem(E.RootAboveDir, Dir) as F
    where is_directory=1
    ) 
 Begin
   Declare @repFich sysname; Select @repFich = repfich from Dbo.EnumsAndOptions
-  Raiserror ('The directory configured in Dbo.EnumsAndOptions %s does not exist. Please correct it, close this session, and reconnect.', 20, 1, @repfich) With Log
+  Raiserror ('The directory configured in Dbo.EnumsAndOptions %s wasn''t created or is unaccsessible. Please correct this, close this session, and reconnect.', 20, 1, @repfich) With Log
 End 
 GO
 --------------------------------------------------------------------------------------------
@@ -303,18 +302,18 @@ GO
 --------------------------------------------------------------------------------------------
 DECLARE @ReturnCode INT = 0
 DECLARE @jobId BINARY(16)
-Declare @JobName sysName
-Select @jobname = 'FullQryAudit'
-Select @jobId = job_id From msdb.dbo.sysjobs where name = @JobName
+Declare @DeploymentName sysName
+Select @DeploymentName = DeploymentName From dbo.EnumsAndOptions
+Select @jobId = job_id From msdb.dbo.sysjobs where name = @DeploymentName
 
 If @jobId IS NOT NULL
 Begin
-  EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name = @JobName
+  EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name = @DeploymentName
   IF (@ReturnCode <> 0) Raiserror ('Return code of %d from msdb.dbo.sp_delete_job ', 11, 1, @returnCode)
 
   If exists (Select * From msdb.dbo.sysjobschedules where job_id = @jobId)
   Begin
-    EXEC msdb.dbo.sp_detach_schedule @job_Name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
+    EXEC msdb.dbo.sp_detach_schedule @job_Name = @DeploymentName, @schedule_name = N'FullQryAuditAutoRestart';
     Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name = 'FullQryAuditAutoStart'
     IF (@ReturnCode <> 0) Raiserror ('Return code of %d from msdb.dbo.sp_delete_schedule ', 11, 1, @returnCode)
   End
@@ -503,13 +502,13 @@ GO
 -- run email setup
 Exec dbo.EmailSetup
 GO
-Create or Alter Function dbo.ViewLastJobExec(@jobName sysname)
+Create or Alter Function dbo.ViewLastJobExec(@DeploymentName sysname)
 Returns Table
 as
 Return
 Select R.Status, H.*
 From
-  (Select JobName='FullQryAudit') as Prm
+  (Select DeploymentName='FullQryAudit') as Prm
   CROSS APPLY
   (
   -- by ordering by DENSE_RANK for the given job_id by jobEndInstanceId Desc, prevJobEndInstanceId
@@ -532,7 +531,7 @@ From
       select H.job_id, jobEndInstanceId=H.instance_id
       from 
         -- limit work to a single job by step_id=0 and name through the job parameter
-        (Select job_id, Step_Id=0 From Msdb.dbo.sysjobs as J where j.name = Prm.JobName) as J
+        (Select job_id, Step_Id=0 From Msdb.dbo.sysjobs as J where j.name = Prm.DeploymentName) as J
         -- find the instance_id that marks the end of the job, 
         -- and only rows that marks the end of the job, not the other steps of jobs
         join msdb.dbo.sysjobhistory as H
@@ -718,10 +717,14 @@ With Password = '''+@unknownPwd+'''
    , CHECK_EXPIRATION = OFF, CHECK_POLICY = OFF
 '
 )
+Exec -- dont want to change de database context of the script, so make this dynamic
+(
+'
 Use master
 GRANT VIEW SERVER STATE TO FullQryAuditUser;
 GRANT ALTER TRACE TO FullQryAuditUser;
-Use FullQryAudit
+'
+)
 GO
 -----------------------------------------------------------------------------------------------------------------
 -- Logon trigger to capture login details such as login name, client network address, and application name.
@@ -820,8 +823,6 @@ Select @Sql=[StartExtendedSession] From Dbo.EnumsAndOptions
 Print @Sql
 Exec (@Sql)
 go
-USE FullQryAudit
-GO
 -- -----------------------------------------------------------------------------------------------
 -- Use the trace's event_sequence to determine if a session has been restarted.
 -- The event_sequence within a file always increases for an active extended session.
@@ -987,13 +988,11 @@ From
 Print @Sql
 Exec (@Sql)
 GO
+Create Or Alter Function dbo.FileInfo (@fullPathAndName sysname)
 -- --------------------------------------------------------------------------------
 -- This function returns information about a file if it exists,
 -- including its name components.
 -- --------------------------------------------------------------------------------
-USE FullQryAudit
-GO
-Create Or Alter Function dbo.FileInfo (@fullPathAndName sysname)
 Returns Table
 as
 Return
@@ -1670,7 +1669,7 @@ Begin
        From 
          Dbo.EnumsAndOptions as E 
          CROSS JOIN sys.dm_xe_sessions
-       Where name = E.JobName
+       Where name = E.DeploymentName
        )
      Raiserror('Session FullQryAudit was detected as stopped', 11, 1);
 
@@ -1680,7 +1679,7 @@ Begin
        From 
          Dbo.EnumsAndOptions as E 
          CROSS JOIN sys.server_triggers as T
-       Where name = 'Logon'+jobName+'Trigger'
+       Where name = 'Logon'+DeploymentName+'Trigger'
          And T.is_disabled = 0
        )
      Raiserror('Session LogonFullQryAuditTrigger was detected as missing or disabled', 11, 1);
@@ -1736,29 +1735,27 @@ From
   ) as LigneFreq
 Where nbOcc_Client_net_address=plusFrequent
 go
-USE [msdb]
-GO
-/****** Object:  Job FullQryAudit    Script Date: 2024-06-29 09:23:36 ******/
+-- add job and its schedules
 Begin Try 
 
   BEGIN TRANSACTION;
 
   DECLARE @ReturnCode INT = 0
   DECLARE @jobId BINARY(16)
-  Declare @JobName sysName
+  Declare @DeploymentName sysName
   Declare @context sysname
-  Select @jobname = 'FullQryAudit'
-  Select @jobId = job_id From msdb.dbo.sysjobs where name =@JobName
+  Select @DeploymentName = 'FullQryAudit'
+  Select @jobId = job_id From msdb.dbo.sysjobs where name =@DeploymentName
   
   If @jobId IS NOT NULL
   Begin
     Set @context = 'delete la job'
-    EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=@JobName
+    EXEC @ReturnCode =  msdb.dbo.sp_delete_job @job_name=@DeploymentName
     IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_delete_schedule ',11,1,@returnCode)
 
     If exists (Select * From msdb.dbo.sysjobschedules where job_id=@jobId)
     Begin
-      EXEC sp_detach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
+      EXEC msdb.dbo.sp_detach_schedule @job_name = @DeploymentName, @schedule_name = N'FullQryAuditAutoRestart';
       Exec @ReturnCode =  msdb.dbo.sp_delete_schedule @schedule_name ='FullQryAuditAutoStart'
       IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_delete_schedule ',11,1,@returnCode)
     End
@@ -1767,7 +1764,7 @@ Begin Try
   Set @context = 'ajout de la job'
   Set @jobId = NULL
   EXEC @ReturnCode =  msdb.dbo.sp_add_job 
-    @job_name=@JobName, 
+    @job_name=@DeploymentName, 
 		  @enabled=1, 
 		  @notify_level_eventlog=0, 
 		  @notify_level_email=0, 
@@ -1826,7 +1823,7 @@ End catch
   IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_schedule pour FullQryAuditAutoStart',11,1,@returnCode)
 
   Set @context = 'Attach schedule for FullQryAuditAutoStart'
-  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoStart';
+  EXEC msdb.dbo.sp_attach_schedule @job_name = @DeploymentName, @schedule_name = N'FullQryAuditAutoStart';
 
   Set @context = 'Add schedule for FullQryAuditAutoRestart'
   EXEC @ReturnCode = msdb.dbo.sp_add_schedule 
@@ -1846,7 +1843,7 @@ End catch
   IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_add_schedule pour FullQryAuditAutoRestart',11,1,@returnCode)
 
   Set @context = 'Attach schedule for FullQryAuditAutoRestart a la job'
-  EXEC sp_attach_schedule @job_name = @JobName, @schedule_name = N'FullQryAuditAutoRestart';
+  EXEC msdb.dbo.sp_attach_schedule @job_name = @DeploymentName, @schedule_name = N'FullQryAuditAutoRestart';
 
   Set @context = 'Set (local) as job server for the job'
   EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
@@ -1858,7 +1855,7 @@ EXEC msdb.dbo.sp_update_job @job_id=@jobId,
 		@notify_email_operator_name=N'FullQryAudit_Operator'
 
   Set @context = 'Start the job'
-  EXEC dbo.sp_start_job @JobName;
+  EXEC Msdb.dbo.sp_start_job @DeploymentName;
   IF (@ReturnCode <> 0) Raiserror ('Return code %d frommsdb.dbo.sp_start_job ',11,1,@returnCode)
 
   COMMIT
@@ -1867,13 +1864,11 @@ Begin catch
   Declare @msg nvarchar(max)
   Select @msg = @context + nChar(10)+F.ErrMsg
   From 
-    FullQryAudit.dbo.FormatCurrentMsg (NULL) as F
+    dbo.FormatCurrentMsg (NULL) as F
   Print 'Error when defining or lauching the job: '+@msg
   ROLLBACK
 End catch
 GO
-Use FullQryAudit
-go
 -- help find mappings of extended events to old Sql trace
 Create or alter view dbo.EquivExEventsVsTrace
 as
