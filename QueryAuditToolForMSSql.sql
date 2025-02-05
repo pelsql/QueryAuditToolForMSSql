@@ -48,6 +48,7 @@ Begin
   If @@rowcount = 0
   Begin
     Drop table If Exists Dbo.ConfigMemory
+    Print 'Admin options were never initially set, See OptionsToSetByUser above.'
     Raiserror ('Admin options were never initially set, See OptionsToSetByUser above.', 20, 1) With Log
   End
 End    
@@ -1259,14 +1260,24 @@ Begin
 
   declare @CatchPassThroughMsgInTx table (msg nvarchar(max))
 
-  If Exists (Select * from FullQryAudit.dbo.ShowLastJobStatus Where Status <> 'Succeeded')
+  If Exists (Select * from FullQryAudit.dbo.ShowLastJobStatus Where Status <> 'Succeeded' Or Status is null)
   Begin
+    Insert into dbo.ProcessAuditLog (Msg) Values ('Job restart occuring. Unless explicitely asked, possible causes may follow:')
     Declare @MsgStart Nvarchar(4000)
     Declare @br nvarchar(5) = '<br>'
     Set @MsgStart = 
     N'<body>FullQryAudit Job is <b><u>NOW RESTARTED AND RUNNING</u></b> '+@br+@br+
     N'Please check reason of previous Shutdown of FullQryAudit Job with query:'+@br+@br+
-    N'<b>Select * from FullQryAudit.dbo.ShowLastJobStatus<b> </body>'
+    N'<b>Select * from FullQryAudit.dbo.ShowLastJobStatus<b>'+@br+@br+
+    N'Last 3 messages and/or errors logged in dbo.ProcessAuditLog:'+@br+@br
+    Select top 3 @MsgStart = @MsgStart+Msg+@br
+    From 
+      dbo.ProcessAuditLog
+      CROSS APPLY (Select MsgDateStr=Convert(nvarchar(27),MsgDate,121)) as MsgDateStr
+      CROSS APPLY (Select MsgFmt = MsgDateStr+' / '+Msg) as MsgFmt
+    order by MsgDate Desc
+    Select @MsgStart = @MsgStart+'</body>'
+    print @msgStart
     Exec dbo.SendEmail @msg=@MsgStart, @now=0
   End
 
@@ -1589,7 +1600,7 @@ Begin
     -- if condition is verified, proceed
     If @@ROWCOUNT > 0
     Begin
-      Insert into dbo.ProcessAuditLog(Msg)  Select 'Suppression de '+@aFileToDel
+      Insert into dbo.ProcessAuditLog(Msg)  Select 'File deleted as it was being processed '+@aFileToDel
       Exec master.sys.xp_delete_files @afileToDel
     End
 
@@ -1688,22 +1699,28 @@ Begin
 
   End Try
   Begin Catch
+
+    Insert into @CatchPassThroughMsgInTx 
+    Select 'Error from FullQryAudit.Dbo.CompleteQueryAuditWithConnectionInfo '+nchar(13)+nchar(10)+Fmt.ErrMsg
+    From 
+      (Select ErrMsgTemplate From Dbo.EnumsAndOptions) as E
+      CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
+
     IF @@TRANCOUNT > 0
     BEGIN
        ROLLBACK TRANSACTION;
     END
-    Declare @msg nvarchar(max)
-    Select @msg='Error from FullQryAudit.Dbo.CompleteQueryAuditWithConnectionInfo '+nchar(13)+nchar(10)+Fmt.ErrMsg
-    From 
-      (Select ErrMsgTemplate From Dbo.EnumsAndOptions) as E
-      CROSS APPLY dbo.FormatRunTimeMsg (E.ErrMsgTemplate, ERROR_NUMBER (), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE (), ERROR_MESSAGE ()) as Fmt
-    Insert into @CatchPassThroughMsgInTx Values (@Msg)
-    Insert into dbo.ProcessAuditLog (msg) Select Msg From @CatchPassThroughMsgInTx
+
     If Exists(Select * From sys.Dm_xe_sessions Where name = N'FullQryAudit')
       Exec ('ALTER EVENT SESSION FullQryAudit ON SERVER STATE = Stop')
-    Exec dbo.SendEmail @msg
-    RAISERROR(@msg,16,1) WITH Log -- erreur goes to SQL Server ErrorLog
   End Catch
+
+  Declare @Msg nvarchar(4000)
+  Select @Msg = msg From @CatchPassThroughMsgInTx
+
+  Insert into dbo.ProcessAuditLog (msg) values (@Msg)
+  Exec dbo.SendEmail @Msg
+  RAISERROR(@Msg,16,1) WITH Log -- erreur goes to SQL Server ErrorLog
   
 End -- dbo.CompleteQueryAuditWithConnectionInfo
 go
